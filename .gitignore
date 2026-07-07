@@ -1,0 +1,28 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Claude Code tooling (not part of the app)
+.claude/
+
+# Env
+.env
+
+# Auth (hashed credentials — never commit)
+auth_users.json
+
+# Node (frontend, added at M5)
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Scratch/log files
+scratch_*
+
+# LocalStack
+.localstack/
+volume/

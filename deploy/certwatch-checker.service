@@ -1,0 +1,17 @@
+[Unit]
+Description=CERTWatch SSL checker (one pass over all stored domains)
+After=network.target
+# Replaces the EventBridge schedule from the serverless stack.
+
+[Service]
+Type=oneshot
+User=certwatch
+Group=certwatch
+WorkingDirectory=/opt/certwatch/app
+EnvironmentFile=/etc/certwatch/certwatch.env
+ExecStart=/opt/certwatch/venv/bin/python -m backend.runner.run_checker --once
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/certwatch/data

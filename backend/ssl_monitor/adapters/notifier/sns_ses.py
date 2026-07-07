@@ -1,0 +1,58 @@
+"""SNS + SES notifier.
+
+Publishes the alert to an SNS topic (fan-out to any subscribers) and, when an
+``ALERT_EMAIL`` is configured, also sends a direct SES email. Works against
+LocalStack and real AWS — only the endpoint differs. Delivery failures are
+logged, not raised, so one bad notification never aborts a checker run.
+"""
+
+from __future__ import annotations
+
+import logging
+
+import boto3
+from botocore.exceptions import ClientError
+
+from ...config.settings import Settings
+from ...core.models import Alert
+from .base import format_body, format_subject
+
+logger = logging.getLogger("ssl_monitor.notifier")
+
+
+class SnsSesNotifier:
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+        self._sns = boto3.client("sns", **settings.boto_kwargs())
+        self._ses = boto3.client("ses", **settings.boto_kwargs())
+
+    def notify(self, alert: Alert) -> None:
+        subject = format_subject(alert)
+        body = format_body(alert)
+
+        if self._settings.sns_topic_arn:
+            try:
+                self._sns.publish(
+                    TopicArn=self._settings.sns_topic_arn,
+                    Subject=subject,
+                    Message=body,
+                )
+            except ClientError as exc:
+                logger.error("SNS publish failed for %s: %s", alert.domain, exc)
+
+        # Prefer the domain's own recipients; fall back to the global ALERT_EMAIL.
+        recipients = alert.recipients or (
+            [self._settings.alert_email] if self._settings.alert_email else []
+        )
+        if recipients and self._settings.alert_email:
+            try:
+                self._ses.send_email(
+                    Source=self._settings.alert_email,
+                    Destination={"ToAddresses": recipients},
+                    Message={
+                        "Subject": {"Data": subject},
+                        "Body": {"Text": {"Data": body}},
+                    },
+                )
+            except ClientError as exc:
+                logger.error("SES send failed for %s: %s", alert.domain, exc)

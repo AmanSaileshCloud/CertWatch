@@ -1,0 +1,27 @@
+[Unit]
+Description=CERTWatch SSL checker — continuous 24x7 loop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=certwatch
+Group=certwatch
+WorkingDirectory=/opt/certwatch/app
+EnvironmentFile=/etc/certwatch/certwatch.env
+# Continuous monitoring: probe all domains, then wait N seconds, forever.
+# 300s (5 min) is effectively real-time for cert expiry while staying gentle on
+# the domains you monitor. Lower it for a tighter cadence — but values in the
+# low seconds hammer those third-party servers and can get your IP rate-limited.
+ExecStart=/opt/certwatch/venv/bin/python -m backend.runner.run_checker --interval 300
+Restart=always
+RestartSec=10
+
+# Hardening — the checker only writes to its data dir.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/certwatch/data
+
+[Install]
+WantedBy=multi-user.target
