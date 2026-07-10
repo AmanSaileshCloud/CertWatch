@@ -35,6 +35,37 @@ class CheckOutcome:
     threshold: int | None
 
 
+def refresh_status(
+    record: DomainRecord,
+    *,
+    now: datetime,
+    thresholds: Sequence[int],
+    timeout: float,
+    probe_fn: ProbeFn = probe_cert,
+) -> DomainRecord:
+    """Probe one domain and update status / days / error / last_checked.
+
+    Does NOT touch the alert-dedup state (``last_alert_threshold``), so it's safe
+    to call on add — an already-expiring new domain still gets its first alert on
+    the next real checker pass. On an unreachable host, expiry fields are cleared
+    and ``last_error`` is set — never a false alert.
+    """
+    result = probe_fn(record.host, record.port, timeout)
+
+    if result.reachable and result.not_after is not None:
+        record.days_remaining = days_remaining(result.not_after, now)
+        record.not_after = result.not_after
+        record.last_error = None
+    else:
+        record.not_after = None
+        record.days_remaining = None
+        record.last_error = result.error
+
+    record.status = classify_status(result.reachable, record.days_remaining, thresholds)
+    record.last_checked_at = now
+    return record
+
+
 def check_one(
     record: DomainRecord,
     *,
@@ -45,24 +76,10 @@ def check_one(
 ) -> tuple[DomainRecord, AlertDecision]:
     """Probe one domain and return the updated record + alert decision.
 
-    Mutates and returns ``record`` (caller persists it). On an unreachable host,
-    expiry fields are cleared and ``last_error`` is set — never a false alert.
+    Mutates and returns ``record`` (caller persists it).
     """
-    result = probe_fn(record.host, record.port, timeout)
-
-    if result.reachable and result.not_after is not None:
-        days = days_remaining(result.not_after, now)
-        record.not_after = result.not_after
-        record.days_remaining = days
-        record.last_error = None
-    else:
-        days = None
-        record.not_after = None
-        record.days_remaining = None
-        record.last_error = result.error
-
-    record.status = classify_status(result.reachable, days, thresholds)
-    record.last_checked_at = now
+    refresh_status(record, now=now, thresholds=thresholds, timeout=timeout, probe_fn=probe_fn)
+    days = record.days_remaining
 
     if record.alerts_enabled:
         decision = decide_alert(days, thresholds, record.last_alert_threshold)

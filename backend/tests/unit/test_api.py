@@ -65,8 +65,10 @@ def test_add_list_delete_domain(ctx):
     assert r.status_code == 201
     body = r.json()
     assert body["domain"] == "example.com:443"
-    assert body["status"] == "unreachable"  # not yet checked
-    assert body["days_remaining"] is None
+    # Probed on add (fake probe → healthy) so the row shows real status at once.
+    assert body["status"] == "ok"
+    assert body["days_remaining"] is not None
+    assert body["last_checked_at"] is not None
 
     r = client.get("/domains")
     assert [d["domain"] for d in r.json()] == ["example.com:443"]

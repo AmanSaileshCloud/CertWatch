@@ -29,7 +29,7 @@ from ..auth.security import create_access_token
 from ..auth.users import UserStore
 from ..config.settings import Settings
 from ..core.models import Alert, Status
-from ..services.checker import ProbeFn, run_check
+from ..services.checker import ProbeFn, refresh_status, run_check
 from ..services.domains import (
     DomainExists,
     DomainNotFound,
@@ -195,6 +195,8 @@ def get_domains(
 def post_domain(
     body: DomainIn,
     storage: StoragePort = Depends(get_storage),
+    settings: Settings = Depends(get_app_settings),
+    probe: ProbeFn = Depends(get_probe),
     _user: User = Depends(get_current_user),
 ) -> DomainOut:
     now = datetime.now(timezone.utc)
@@ -204,6 +206,11 @@ def post_domain(
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except InvalidDomain as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    # Probe immediately so the new row shows real status without waiting for the
+    # periodic checker. Doesn't touch alert-dedup, so the first alert still fires.
+    refresh_status(record, now=now, thresholds=settings.threshold_days,
+                   timeout=settings.tls_timeout_seconds, probe_fn=probe)
+    storage.put(record)
     return DomainOut.from_record(record)
 
 
@@ -242,6 +249,8 @@ def remove_domain(
 def bulk_add_domains(
     body: BulkDomainIn,
     storage: StoragePort = Depends(get_storage),
+    settings: Settings = Depends(get_app_settings),
+    probe: ProbeFn = Depends(get_probe),
     _user: User = Depends(get_current_user),
 ) -> BulkDomainResult:
     now = datetime.now(timezone.utc)
@@ -249,6 +258,9 @@ def bulk_add_domains(
     for item in body.domains:
         try:
             record = add_domain(storage, item.domain, item.port, now)
+            refresh_status(record, now=now, thresholds=settings.threshold_days,
+                           timeout=settings.tls_timeout_seconds, probe_fn=probe)
+            storage.put(record)
             added.append(DomainOut.from_record(record))
         except (DomainExists, InvalidDomain) as exc:
             failed.append({"domain": item.domain, "error": str(exc)})
