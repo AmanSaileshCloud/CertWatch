@@ -2422,6 +2422,57 @@ body {
   font-size: 14px;
 }
 
+/* ── Confirm dialog ───────────────────────────────────── */
+.confirm {
+  max-width: 400px;
+  text-align: center;
+  padding: 28px 26px 22px;
+}
+.confirm__icon {
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 14px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(248, 113, 113, 0.14);
+  color: var(--expired);
+}
+.confirm__title {
+  margin: 0 0 8px;
+  font-size: 18px;
+  font-family: var(--mono);
+  letter-spacing: 0.5px;
+}
+.confirm__msg {
+  margin: 0 0 22px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--ink-dim);
+}
+.confirm__msg strong {
+  color: var(--ink);
+  font-family: var(--mono);
+}
+.confirm__actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+.confirm__actions .btn {
+  min-width: 112px;
+  justify-content: center;
+}
+.confirm__danger {
+  background: var(--expired);
+  color: #fff;
+  border-color: var(--expired);
+  font-weight: 600;
+}
+.confirm__danger:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
 /* Respect users who prefer reduced motion */
 @media (prefers-reduced-motion: reduce) {
   *,

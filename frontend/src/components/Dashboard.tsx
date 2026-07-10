@@ -15,6 +15,7 @@ import { SearchFilter } from "./SearchFilter";
 import { ExportMenu } from "./ExportMenu";
 import { BulkImportModal } from "./BulkImportModal";
 import { UsersAdmin } from "./UsersAdmin";
+import { ConfirmDialog } from "./ConfirmDialog";
 import type { ThemePreference } from "../hooks/useTheme";
 import logoUrl from "../assets/WorkmatesLogo.png";
 
@@ -62,6 +63,8 @@ export function Dashboard({ preference, onToggleTheme }: DashboardProps) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [confirmBulk, setConfirmBulk] = useState(false);
   const [highlightKey, setHighlightKey] = useState<string | null>(null);
   const [selected, setSelected] = useState<DomainRecord | null>(null);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
@@ -280,7 +283,7 @@ export function Dashboard({ preference, onToggleTheme }: DashboardProps) {
                 <button className="btn btn--ghost bulkbar__deselect" onClick={() => setSelectedKeys(new Set())}>
                   Deselect all
                 </button>
-                <button className="btn bulkbar__delete" onClick={handleDeleteSelected}>
+                <button className="btn bulkbar__delete" onClick={() => setConfirmBulk(true)}>
                   Delete {selectedKeys.size} domain{selectedKeys.size !== 1 ? "s" : ""}
                 </button>
               </motion.div>
@@ -323,7 +326,7 @@ export function Dashboard({ preference, onToggleTheme }: DashboardProps) {
               selectedKeys={selectedKeys}
               onToggleSelect={handleToggleSelect}
               onSelectAll={handleSelectAll}
-              onDelete={handleDelete}
+              onDelete={setConfirmDelete}
               onSelect={setSelected}
               deletingKey={deletingKey}
               running={false}
@@ -337,6 +340,37 @@ export function Dashboard({ preference, onToggleTheme }: DashboardProps) {
           <span>Thresholds 30 · 14 · 7 · 1 days</span>
           <span>Local mode · console notifier</span>
         </footer>
+
+        <AnimatePresence>
+          {confirmDelete && (
+            <ConfirmDialog
+              title="Stop monitoring?"
+              message={<>Remove <strong>{confirmDelete.replace(/:443$/, "")}</strong> from the dashboard? You can add it again anytime.</>}
+              confirmLabel="Remove"
+              onCancel={() => setConfirmDelete(null)}
+              onConfirm={() => {
+                const key = confirmDelete;
+                setConfirmDelete(null);
+                void handleDelete(key);
+              }}
+            />
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {confirmBulk && (
+            <ConfirmDialog
+              title="Stop monitoring?"
+              message={<>Remove <strong>{selectedKeys.size} domain{selectedKeys.size !== 1 ? "s" : ""}</strong> from the dashboard? This can't be undone in one click.</>}
+              confirmLabel={`Remove ${selectedKeys.size}`}
+              onCancel={() => setConfirmBulk(false)}
+              onConfirm={() => {
+                setConfirmBulk(false);
+                void handleDeleteSelected();
+              }}
+            />
+          )}
+        </AnimatePresence>
 
         <AnimatePresence>
           {showUsers && (
