@@ -15,7 +15,7 @@ from botocore.exceptions import ClientError
 
 from ...config.settings import Settings
 from ...core.models import Alert
-from .base import format_body, format_subject
+from .base import format_body, format_html_body, format_subject
 
 logger = logging.getLogger("ssl_monitor.notifier")
 
@@ -30,6 +30,7 @@ class SnsSesNotifier:
         subject = format_subject(alert)
         body = format_body(alert)
 
+        # SNS is plain-text only (AWS limit) — used for fan-out to other systems.
         if self._settings.sns_topic_arn:
             try:
                 self._sns.publish(
@@ -40,6 +41,7 @@ class SnsSesNotifier:
             except ClientError as exc:
                 logger.error("SNS publish failed for %s: %s", alert.domain, exc)
 
+        # SES carries the rich HTML card (with the plain text as a fallback part).
         # Prefer the domain's own recipients; fall back to the global ALERT_EMAIL.
         recipients = alert.recipients or (
             [self._settings.alert_email] if self._settings.alert_email else []
@@ -51,7 +53,10 @@ class SnsSesNotifier:
                     Destination={"ToAddresses": recipients},
                     Message={
                         "Subject": {"Data": subject},
-                        "Body": {"Text": {"Data": body}},
+                        "Body": {
+                            "Html": {"Data": format_html_body(alert)},
+                            "Text": {"Data": body},
+                        },
                     },
                 )
             except ClientError as exc:
