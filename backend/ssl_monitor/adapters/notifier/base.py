@@ -87,7 +87,7 @@ def format_html_body(alert: Alert) -> str:
 <div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:560px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;border:1px solid #e2e8f0;">
   <div style="background:linear-gradient(135deg,#6c5cff 0%,#4733e0 55%,#2a1e7a 100%);padding:22px 26px;color:#fff;">
     <div style="font-size:11px;letter-spacing:2px;opacity:.85;text-transform:uppercase;">CERTWATCH · TLS Expiry Alert</div>
-    <div style="font-size:20px;font-weight:700;margin:8px 0 12px;font-family:ui-monospace,Menlo,monospace;">{alert.domain}</div>
+    <a href="https://{alert.domain}" style="display:inline-block;background:#ffffff;color:#111827;text-decoration:none;font-size:17px;font-weight:700;padding:5px 12px;border-radius:8px;margin:8px 0 12px;font-family:ui-monospace,Menlo,monospace;">{alert.domain}</a>
     <div>{badge(headline)}{badge(f"{days} days left")}{badge(f"threshold {threshold}")}</div>
     <div style="font-size:11px;opacity:.8;margin-top:10px;">Generated {generated}</div>
   </div>
