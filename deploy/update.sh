@@ -33,15 +33,21 @@ VITE_API_URL="" npm run build
 popd >/dev/null
 
 echo "==> Refreshing systemd units + Nginx"
-cp "$APP_DIR/deploy/certwatch-api.service"     /etc/systemd/system/
-cp "$APP_DIR/deploy/certwatch-checker.service" /etc/systemd/system/
-cp "$APP_DIR/deploy/certwatch-checker.timer"   /etc/systemd/system/
+cp "$APP_DIR/deploy/certwatch-api.service"          /etc/systemd/system/
+cp "$APP_DIR/deploy/certwatch-checker.service"      /etc/systemd/system/
+cp "$APP_DIR/deploy/certwatch-checker.timer"        /etc/systemd/system/
+cp "$APP_DIR/deploy/certwatch-checker-loop.service" /etc/systemd/system/
 cp "$APP_DIR/deploy/nginx.conf" /etc/nginx/sites-available/certwatch
 
 chown -R "$APP_USER:$APP_USER" "$APP_HOME"
 
 systemctl daemon-reload
 systemctl restart certwatch-api.service
+# Restart the 24x7 checker if it's the active one (the timer-based oneshot picks
+# up new code automatically on its next scheduled run, so it needs no restart).
+if systemctl is-active --quiet certwatch-checker-loop.service; then
+  systemctl restart certwatch-checker-loop.service
+fi
 nginx -t && systemctl reload nginx
 
 echo "✓ Update complete. Logs: journalctl -u certwatch-api -f"
