@@ -260,7 +260,7 @@ export function Dashboard({ preference, onToggleTheme }: DashboardProps) {
         <main className="main">
           {/* Summary + Health Ring */}
           <div className="overview">
-            <SummaryBar domains={domains} />
+            <SummaryBar domains={domains} filter={filterStatus} onFilter={setFilterStatus} />
             <HealthRing domains={domains} />
           </div>
 

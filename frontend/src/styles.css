@@ -2422,6 +2422,19 @@ body {
   font-size: 14px;
 }
 
+/* ── Summary cards are clickable filters ──────────────── */
+button.chip,
+button.summary__total {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.chip--selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 /* ── Certificate details (drawer) ─────────────────────── */
 .detail__mono {
   font-family: var(--mono);

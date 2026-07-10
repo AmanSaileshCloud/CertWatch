@@ -10,22 +10,47 @@ const LABELS: Record<Status, string> = {
   ok: "Healthy",
 };
 
-function Chip({ status, count }: { status: Status; count: number }) {
+type Filter = Status | "all";
+
+function Chip({
+  status,
+  count,
+  selected,
+  onSelect,
+}: {
+  status: Status;
+  count: number;
+  selected: boolean;
+  onSelect: (f: Filter) => void;
+}) {
   const animated = useCountUp(count);
-  const active = count > 0 && status !== "ok";
+  const hasIssues = count > 0 && status !== "ok";
   return (
-    <motion.div
-      className={`chip chip--${status} ${active ? "chip--active" : ""}`}
+    <motion.button
+      type="button"
+      className={`chip chip--${status} ${hasIssues ? "chip--active" : ""} ${selected ? "chip--selected" : ""}`}
       whileHover={{ y: -3 }}
+      whileTap={{ scale: 0.97 }}
       transition={{ type: "spring", stiffness: 400, damping: 22 }}
+      onClick={() => onSelect(selected ? "all" : status)}
+      title={`Show ${LABELS[status].toLowerCase()} only`}
+      aria-pressed={selected}
     >
       <span className="chip__count">{animated}</span>
       <span className="chip__label">{LABELS[status]}</span>
-    </motion.div>
+    </motion.button>
   );
 }
 
-export function SummaryBar({ domains }: { domains: DomainRecord[] }) {
+export function SummaryBar({
+  domains,
+  filter,
+  onFilter,
+}: {
+  domains: DomainRecord[];
+  filter: Filter;
+  onFilter: (f: Filter) => void;
+}) {
   const counts = domains.reduce<Record<string, number>>((acc, d) => {
     acc[d.status] = (acc[d.status] ?? 0) + 1;
     return acc;
@@ -34,13 +59,22 @@ export function SummaryBar({ domains }: { domains: DomainRecord[] }) {
 
   return (
     <div className="summary">
-      <div className="summary__total">
+      <motion.button
+        type="button"
+        className={`summary__total ${filter === "all" ? "chip--selected" : ""}`}
+        whileHover={{ y: -3 }}
+        whileTap={{ scale: 0.97 }}
+        transition={{ type: "spring", stiffness: 400, damping: 22 }}
+        onClick={() => onFilter("all")}
+        title="Show all"
+        aria-pressed={filter === "all"}
+      >
         <span className="summary__total-num">{total}</span>
         <span className="summary__total-label">monitored</span>
-      </div>
+      </motion.button>
       <div className="summary__chips">
         {ORDER.map((s) => (
-          <Chip key={s} status={s} count={counts[s] ?? 0} />
+          <Chip key={s} status={s} count={counts[s] ?? 0} selected={filter === s} onSelect={onFilter} />
         ))}
       </div>
     </div>
