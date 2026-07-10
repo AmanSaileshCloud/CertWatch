@@ -137,8 +137,14 @@ sudo systemctl enable --now certwatch-checker.timer
 
 **Deploy a code update**
 ```bash
-cd /path/to/updated/checkout
-sudo bash deploy/update.sh                # sync, rebuild, restart
+cd /path/to/updated/checkout && git pull
+sudo bash deploy/update.sh                # systemd: sync, rebuild, restart
+```
+If you run under **PM2** instead of systemd, use the PM2 variant (it restarts
+the PM2 processes, not the systemd units):
+```bash
+sudo bash deploy/update-pm2.sh            # backend-only (fast)
+sudo bash deploy/update-pm2.sh --frontend # also rebuild the React UI
 ```
 
 **Back up the data** (everything lives in one directory)
