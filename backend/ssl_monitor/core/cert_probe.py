@@ -19,8 +19,10 @@ from collections.abc import Callable
 from datetime import datetime
 
 from cryptography import x509
+from cryptography.hazmat.primitives.asymmetric import dsa, ec, ed448, ed25519, rsa
+from cryptography.x509.oid import NameOID
 
-from .models import ProbeResult
+from .models import CertInfo, ProbeResult
 
 # (host, port, timeout_seconds) -> DER-encoded leaf certificate bytes, or raises.
 Connector = Callable[[str, int, float], bytes]
@@ -84,3 +86,71 @@ def probe_cert(
         return ProbeResult(host, port, reachable=False, error=f"{type(exc).__name__}: {exc}")
 
     return ProbeResult(host, port, reachable=True, not_after=not_after)
+
+
+def _friendly_name(name: x509.Name) -> str:
+    """Common name, else organization, else the full RFC4514 string."""
+    for oid in (NameOID.COMMON_NAME, NameOID.ORGANIZATION_NAME):
+        attrs = name.get_attributes_for_oid(oid)
+        if attrs:
+            return str(attrs[0].value)
+    return name.rfc4514_string()
+
+
+def _key_summary(pub) -> tuple[str, int | None]:
+    if isinstance(pub, rsa.RSAPublicKey):
+        return "RSA", pub.key_size
+    if isinstance(pub, ec.EllipticCurvePublicKey):
+        return f"EC ({pub.curve.name})", pub.key_size
+    if isinstance(pub, ed25519.Ed25519PublicKey):
+        return "Ed25519", 256
+    if isinstance(pub, ed448.Ed448PublicKey):
+        return "Ed448", 448
+    if isinstance(pub, dsa.DSAPublicKey):
+        return "DSA", pub.key_size
+    return type(pub).__name__, getattr(pub, "key_size", None)
+
+
+def extract_cert_info(der: bytes) -> CertInfo:
+    """Parse a leaf certificate's human-readable details from DER bytes."""
+    cert = x509.load_der_x509_certificate(der)
+
+    sans: list[str] = []
+    try:
+        ext = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        sans = list(ext.value.get_values_for_type(x509.DNSName))
+    except x509.ExtensionNotFound:
+        pass
+
+    key_type, key_bits = _key_summary(cert.public_key())
+    sig = getattr(cert.signature_algorithm_oid, "_name", None) or cert.signature_algorithm_oid.dotted_string
+
+    return CertInfo(
+        issuer=_friendly_name(cert.issuer),
+        subject=_friendly_name(cert.subject),
+        serial=format(cert.serial_number, "x"),
+        sig_algorithm=sig,
+        key_type=key_type,
+        key_bits=key_bits,
+        not_before=cert.not_valid_before_utc,
+        not_after=cert.not_valid_after_utc,
+        sans=sans,
+    )
+
+
+def probe_cert_info(
+    host: str,
+    port: int = 443,
+    timeout: float = 5.0,
+    *,
+    connector: Connector = _default_connector,
+) -> CertInfo:
+    """Connect to ``host:port`` and return full leaf-cert details.
+
+    Raises on any connection/handshake/parse failure — the caller (an on-demand
+    detail endpoint) maps that to an error response.
+    """
+    der = connector(host, port, timeout)
+    if not der:
+        raise ssl.SSLError("peer returned no certificate")
+    return extract_cert_info(der)

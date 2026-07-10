@@ -108,3 +108,22 @@ class BulkDomainResult(BaseModel):
 
 class DigestIn(BaseModel):
     email: str
+
+
+class CertOut(BaseModel):
+    """Full leaf-certificate details (fetched on demand for the detail view)."""
+
+    issuer: str
+    subject: str
+    serial: str
+    sig_algorithm: str
+    key_type: str
+    key_bits: int | None
+    not_before: datetime | None
+    not_after: datetime | None
+    sans: list[str]
+
+
+class ChangePasswordIn(BaseModel):
+    current_password: str
+    new_password: str

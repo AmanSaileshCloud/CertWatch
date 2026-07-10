@@ -39,6 +39,18 @@ export interface MessageResponse {
   message: string;
 }
 
+export interface CertInfo {
+  issuer: string;
+  subject: string;
+  serial: string;
+  sig_algorithm: string;
+  key_type: string;
+  key_bits: number | null;
+  not_before: string | null;
+  not_after: string | null;
+  sans: string[];
+}
+
 export interface AdminUser {
   username: string;
   role: string;

@@ -16,6 +16,7 @@ import { ExportMenu } from "./ExportMenu";
 import { BulkImportModal } from "./BulkImportModal";
 import { UsersAdmin } from "./UsersAdmin";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { ChangePasswordModal } from "./ChangePasswordModal";
 import type { ThemePreference } from "../hooks/useTheme";
 import logoUrl from "../assets/WorkmatesLogo.png";
 
@@ -65,6 +66,7 @@ export function Dashboard({ preference, onToggleTheme }: DashboardProps) {
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [confirmBulk, setConfirmBulk] = useState(false);
+  const [showChangePw, setShowChangePw] = useState(false);
   const [highlightKey, setHighlightKey] = useState<string | null>(null);
   const [selected, setSelected] = useState<DomainRecord | null>(null);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
@@ -238,6 +240,16 @@ export function Dashboard({ preference, onToggleTheme }: DashboardProps) {
                 {(user?.username ?? "?").slice(0, 1).toUpperCase()}
               </span>
               <span className="usermenu__name">{user?.username}</span>
+              <button
+                className="btn btn--ghost btn--icon"
+                onClick={() => setShowChangePw(true)}
+                title="Change password"
+                aria-label="Change password"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
+              </button>
               <button className="btn btn--ghost usermenu__logout" onClick={logout} title="Sign out">
                 Sign out
               </button>
@@ -370,6 +382,10 @@ export function Dashboard({ preference, onToggleTheme }: DashboardProps) {
               }}
             />
           )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {showChangePw && <ChangePasswordModal onClose={() => setShowChangePw(false)} />}
         </AnimatePresence>
 
         <AnimatePresence>

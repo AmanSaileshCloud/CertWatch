@@ -41,9 +41,12 @@ from ..services.domains import (
     list_domains,
     update_domain,
 )
+from ..auth.rate_limit import LoginLimiter
 from .dependencies import (
     get_app_settings,
+    get_cert_prober,
     get_current_user,
+    get_login_limiter,
     get_mailer,
     get_notifier,
     get_probe,
@@ -56,6 +59,8 @@ from .schemas import (
     AdminUserOut,
     BulkDomainIn,
     BulkDomainResult,
+    CertOut,
+    ChangePasswordIn,
     CheckSummary,
     DigestIn,
     DomainIn,
@@ -125,12 +130,22 @@ def login(
     body: LoginIn,
     store: UserStore = Depends(get_user_store),
     settings: Settings = Depends(get_app_settings),
+    limiter: LoginLimiter = Depends(get_login_limiter),
 ) -> TokenOut:
+    wait = limiter.retry_after(body.username)
+    if wait > 0:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Too many failed attempts. Try again in {wait}s.",
+            headers={"Retry-After": str(wait)},
+        )
     user = store.verify(body.username, body.password)
     if user is None:
+        limiter.record_failure(body.username)
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password"
         )
+    limiter.reset(body.username)
     token = create_access_token(
         user.username, user.role, settings.auth_secret, settings.token_expire_minutes
     )
@@ -141,6 +156,25 @@ def login(
 def me(user: User = Depends(get_current_user)) -> UserOut:
     """Return the authenticated user (identity + role)."""
     return UserOut(username=user.username, role=user.role)
+
+
+@app.post("/auth/change-password", response_model=MessageOut)
+def change_password(
+    body: ChangePasswordIn,
+    user: User = Depends(get_current_user),
+    store: UserStore = Depends(get_user_store),
+) -> MessageOut:
+    if len(body.new_password) < 8:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="New password must be at least 8 characters.",
+        )
+    if store.verify(user.username, body.current_password) is None:
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED, detail="Current password is incorrect."
+        )
+    store.set_password(user.username, body.new_password)
+    return MessageOut(message="Password changed.")
 
 
 # ── Admin: user management (admin role required) ────────────────
@@ -292,6 +326,37 @@ def test_alert(
             f"Test alert dispatched for {record.host}. Check the recipient inbox "
             "(SNS/SES) or the server logs to confirm delivery."
         )
+    )
+
+
+@app.get("/domains/{domain}/cert", response_model=CertOut)
+def get_cert(
+    domain: str,
+    storage: StoragePort = Depends(get_storage),
+    settings: Settings = Depends(get_app_settings),
+    prober=Depends(get_cert_prober),
+    _user: User = Depends(get_current_user),
+) -> CertOut:
+    """Fetch full certificate details live (issuer, SANs, key, etc.)."""
+    record = next((r for r in list_domains(storage) if r.domain == domain), None)
+    if record is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="domain not found")
+    try:
+        info = prober(record.host, record.port, settings.tls_timeout_seconds)
+    except Exception as exc:  # noqa: BLE001 - any probe failure → clean 502
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, detail=f"Could not read certificate: {exc}"
+        ) from exc
+    return CertOut(
+        issuer=info.issuer,
+        subject=info.subject,
+        serial=info.serial,
+        sig_algorithm=info.sig_algorithm,
+        key_type=info.key_type,
+        key_bits=info.key_bits,
+        not_before=info.not_before,
+        not_after=info.not_after,
+        sans=info.sans,
     )
 
 

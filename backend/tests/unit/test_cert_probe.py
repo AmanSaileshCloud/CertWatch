@@ -112,3 +112,14 @@ def test_default_parser_round_trips_der(valid_cert_der):
     res = probe_cert("example.test", connector=_connector_returning(valid_cert_der))
     assert isinstance(res.not_after, dt.datetime)
     assert res.not_after.tzinfo is not None
+
+
+def test_extract_cert_info_reads_fields(valid_cert_der):
+    from backend.ssl_monitor.core.cert_probe import extract_cert_info
+
+    info = extract_cert_info(valid_cert_der)
+    assert info.subject == "example.test"
+    assert info.key_type == "RSA" and info.key_bits == 2048
+    assert "example.test" in info.sans
+    assert info.serial and info.not_after is not None and info.not_before is not None
+    assert "sha256" in info.sig_algorithm.lower()

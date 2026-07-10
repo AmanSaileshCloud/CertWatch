@@ -1,7 +1,7 @@
-import { useState, type KeyboardEvent } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 import { motion } from "motion/react";
 import { api, ApiError } from "../api";
-import type { DomainRecord } from "../types";
+import type { CertInfo, DomainRecord } from "../types";
 import { StatusBadge } from "./StatusBadge";
 import { useToast } from "./Toast";
 
@@ -25,6 +25,25 @@ export function DomainDetail({ record, onClose, onSaved }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [testingAlert, setTestingAlert] = useState(false);
+
+  const [cert, setCert] = useState<CertInfo | null>(null);
+  const [certState, setCertState] = useState<"loading" | "error" | "done">("loading");
+  const [certErr, setCertErr] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setCertState("loading");
+    api
+      .getCertDetails(record.domain)
+      .then((c) => { if (!cancelled) { setCert(c); setCertState("done"); } })
+      .catch((e) => {
+        if (!cancelled) {
+          setCertErr(e instanceof ApiError ? e.message : "Could not read certificate");
+          setCertState("error");
+        }
+      });
+    return () => { cancelled = true; };
+  }, [record.domain]);
 
   const dirty =
     alertsEnabled !== record.alerts_enabled ||
@@ -132,6 +151,38 @@ export function DomainDetail({ record, onClose, onSaved }: Props) {
             <dt>Added</dt>
             <dd>{fmt(record.created_at)}</dd>
           </dl>
+        </section>
+
+        <section className="drawer__section">
+          <h3>Certificate details</h3>
+          {certState === "loading" && <p className="drawer__hint">Reading certificate…</p>}
+          {certState === "error" && <div className="banner banner--error">{certErr}</div>}
+          {certState === "done" && cert && (
+            <dl className="detail">
+              <dt>Issued to</dt>
+              <dd>{cert.subject}</dd>
+              <dt>Issued by</dt>
+              <dd>{cert.issuer}</dd>
+              <dt>Valid from</dt>
+              <dd>{fmt(cert.not_before)}</dd>
+              <dt>Valid until</dt>
+              <dd>{fmt(cert.not_after)}</dd>
+              <dt>Key</dt>
+              <dd>{cert.key_type}{cert.key_bits ? ` · ${cert.key_bits}-bit` : ""}</dd>
+              <dt>Signature</dt>
+              <dd>{cert.sig_algorithm}</dd>
+              <dt>Serial</dt>
+              <dd className="detail__mono">{cert.serial}</dd>
+              <dt>Covers ({cert.sans.length})</dt>
+              <dd>
+                <div className="sans">
+                  {cert.sans.length
+                    ? cert.sans.map((s) => <span key={s} className="sans__item">{s}</span>)
+                    : "—"}
+                </div>
+              </dd>
+            </dl>
+          )}
         </section>
 
         <section className="drawer__section">

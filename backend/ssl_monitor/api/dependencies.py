@@ -18,10 +18,11 @@ from ..adapters.mailer.smtp import SmtpMailer
 from ..adapters.notifier.base import NotifierPort
 from ..adapters.storage.base import StoragePort
 from ..auth.models import User
+from ..auth.rate_limit import LoginLimiter
 from ..auth.security import decode_access_token
 from ..auth.users import UserStore
 from ..config.settings import Settings
-from ..core.cert_probe import probe_cert
+from ..core.cert_probe import probe_cert, probe_cert_info
 from ..handlers._deps import get_settings, make_notifier, make_storage
 from ..services.checker import ProbeFn
 
@@ -49,6 +50,17 @@ def get_notifier() -> NotifierPort:
 def get_probe() -> ProbeFn:
     """The probe function used by POST /checks/run (overridable in tests)."""
     return probe_cert
+
+
+def get_cert_prober():
+    """Full-cert-details prober for the on-demand detail endpoint (overridable)."""
+    return probe_cert_info
+
+
+@lru_cache(maxsize=1)
+def get_login_limiter() -> LoginLimiter:
+    """Process-wide login rate limiter."""
+    return LoginLimiter()
 
 
 @lru_cache(maxsize=1)

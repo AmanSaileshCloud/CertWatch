@@ -62,6 +62,14 @@ class UserStore:
         self._save()
         return self._to_user(entry)
 
+    def set_password(self, username: str, new_password: str) -> bool:
+        entry = self._users.get(username)
+        if entry is None:
+            return False
+        entry["password_hash"] = hash_password(new_password)
+        self._save()
+        return True
+
     def delete(self, username: str) -> bool:
         existed = username in self._users
         self._users.pop(username, None)

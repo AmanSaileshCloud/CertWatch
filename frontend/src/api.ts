@@ -1,5 +1,6 @@
 import type {
   AdminUser,
+  CertInfo,
   CheckSummary,
   DomainRecord,
   MessageResponse,
@@ -74,6 +75,15 @@ export const api = {
     }),
 
   me: () => request<User>("/auth/me"),
+
+  changePassword: (current_password: string, new_password: string) =>
+    request<MessageResponse>("/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({ current_password, new_password }),
+    }),
+
+  getCertDetails: (domainKey: string) =>
+    request<CertInfo>(`/domains/${encodeURIComponent(domainKey)}/cert`),
 
   listUsers: () => request<AdminUser[]>("/admin/users"),
 

@@ -2422,6 +2422,27 @@ body {
   font-size: 14px;
 }
 
+/* ── Certificate details (drawer) ─────────────────────── */
+.detail__mono {
+  font-family: var(--mono);
+  font-size: 12px;
+  word-break: break-all;
+}
+.sans {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sans__item {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--ink-dim);
+}
+
 /* ── Confirm dialog ───────────────────────────────────── */
 .confirm {
   max-width: 400px;
