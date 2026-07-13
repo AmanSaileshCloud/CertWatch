@@ -64,8 +64,8 @@ def render_digest_pdf(domains: list) -> bytes:
     )
 
     styles = {
-        "brand": ParagraphStyle("brand", fontName="Helvetica-Bold", fontSize=20, textColor=_ACCENT),
-        "sub": ParagraphStyle("sub", fontName="Helvetica", fontSize=10, textColor=colors.HexColor("#64748b"), spaceBefore=2),
+        "brand": ParagraphStyle("brand", fontName="Helvetica-Bold", fontSize=20, leading=24, textColor=_ACCENT),
+        "sub": ParagraphStyle("sub", fontName="Helvetica", fontSize=10, leading=13, textColor=colors.HexColor("#64748b"), spaceBefore=3),
         "h": ParagraphStyle("h", fontName="Helvetica-Bold", fontSize=11, textColor=colors.HexColor("#1e293b"), spaceBefore=6, spaceAfter=6),
         "cell": ParagraphStyle("cell", fontName="Helvetica", fontSize=9, textColor=colors.HexColor("#1e293b")),
         "mono": ParagraphStyle("mono", fontName="Courier", fontSize=9, textColor=colors.HexColor("#1e293b")),
