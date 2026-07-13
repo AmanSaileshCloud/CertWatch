@@ -74,9 +74,7 @@ export function Dashboard({ preference, onToggleTheme }: DashboardProps) {
   const [filterStatus, setFilterStatus] = useState<Status | "all">("all");
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [showUsers, setShowUsers] = useState(false);
-  const [showDigest, setShowDigest] = useState(false);
-  const [digestEmail, setDigestEmail] = useState("");
-  const [sendingDigest, setSendingDigest] = useState(false);
+  const [downloadingDigest, setDownloadingDigest] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -153,19 +151,24 @@ export function Dashboard({ preference, onToggleTheme }: DashboardProps) {
     }
   }
 
-  async function handleSendDigest() {
-    const email = digestEmail.trim();
-    if (!email) return;
-    setSendingDigest(true);
+  async function handleDownloadDigest() {
+    setDownloadingDigest(true);
     try {
-      await api.sendDigest(email);
-      toast.show(`Digest sent to ${email}`, "success");
-      setShowDigest(false);
-      setDigestEmail("");
+      const html = await api.downloadDigest();
+      const stamp = new Date().toISOString().slice(0, 10);
+      const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `certwatch-digest-${stamp}.html`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.show("Digest downloaded", "success");
     } catch (e) {
-      toast.show(e instanceof ApiError ? e.message : "Could not send digest", "error");
+      toast.show(e instanceof ApiError ? e.message : "Could not download digest", "error");
     } finally {
-      setSendingDigest(false);
+      setDownloadingDigest(false);
     }
   }
 
@@ -223,13 +226,14 @@ export function Dashboard({ preference, onToggleTheme }: DashboardProps) {
             {user?.role === "admin" && (
               <button
                 className="btn btn--ghost"
-                onClick={() => setShowDigest(true)}
-                title="Send a digest email with all domain statuses"
+                onClick={handleDownloadDigest}
+                disabled={downloadingDigest}
+                title="Download an HTML digest of all domain statuses"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ marginRight: 5, verticalAlign: "middle" }}>
-                  <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
                 </svg>
-                Digest
+                {downloadingDigest ? "Preparing…" : "Digest"}
               </button>
             )}
 
@@ -407,55 +411,6 @@ export function Dashboard({ preference, onToggleTheme }: DashboardProps) {
                 }
               }}
             />
-          )}
-        </AnimatePresence>
-
-        <AnimatePresence>
-          {showDigest && (
-            <motion.div
-              className="modal__backdrop"
-              onClick={() => setShowDigest(false)}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-            >
-              <motion.div
-                className="modal digest-modal"
-                onClick={(e) => e.stopPropagation()}
-                initial={{ y: 20, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                exit={{ y: 20, opacity: 0 }}
-                transition={{ type: "spring", stiffness: 320, damping: 28 }}
-              >
-                <div className="modal__head">
-                  <h2>Send daily digest</h2>
-                  <button className="banner__close" onClick={() => setShowDigest(false)} aria-label="Close">✕</button>
-                </div>
-                <p className="bulk-modal__hint">
-                  A summary of all {domains.length} monitored domain{domains.length !== 1 ? "s" : ""} will be emailed to the address below.
-                </p>
-                <div className="digest-modal__row">
-                  <input
-                    className="addform__input"
-                    type="email"
-                    placeholder="recipient@company.com"
-                    value={digestEmail}
-                    onChange={(e) => setDigestEmail(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && void handleSendDigest()}
-                    disabled={sendingDigest}
-                    autoFocus
-                  />
-                  <motion.button
-                    className="btn btn--primary"
-                    onClick={handleSendDigest}
-                    disabled={sendingDigest || !digestEmail.trim()}
-                    whileTap={{ scale: 0.97 }}
-                  >
-                    {sendingDigest ? "Sending…" : "Send"}
-                  </motion.button>
-                </div>
-              </motion.div>
-            </motion.div>
           )}
         </AnimatePresence>
 

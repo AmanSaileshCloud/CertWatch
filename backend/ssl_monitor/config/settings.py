@@ -64,13 +64,6 @@ class Settings:
     auth_secret: str
     token_expire_minutes: int
     users_file: str
-    # Digest mailer (SMTP).
-    mailer: str  # "console" | "smtp" | "sns_ses"
-    smtp_host: str
-    smtp_port: int
-    smtp_user: str
-    smtp_pass: str
-    smtp_from: str
 
     @property
     def is_local(self) -> bool:
@@ -105,12 +98,6 @@ class Settings:
             auth_secret=e.get("AUTH_SECRET", INSECURE_AUTH_SECRET).strip(),
             token_expire_minutes=int(e.get("AUTH_TOKEN_EXPIRE_MINUTES", "720")),
             users_file=e.get("AUTH_USERS_FILE", "auth_users.json").strip(),
-            mailer=e.get("MAILER", "console").strip().lower(),
-            smtp_host=e.get("SMTP_HOST", "smtp-relay.brevo.com").strip(),
-            smtp_port=int(e.get("SMTP_PORT", "587")),
-            smtp_user=e.get("SMTP_USER", "").strip(),
-            smtp_pass=e.get("SMTP_PASS", "").strip(),
-            smtp_from=e.get("SMTP_FROM", e.get("SMTP_USER", "")).strip(),
         )
 
     def boto_kwargs(self) -> dict:

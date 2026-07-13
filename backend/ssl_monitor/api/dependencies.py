@@ -12,9 +12,6 @@ from functools import lru_cache
 
 from fastapi import Depends, Header, HTTPException, status
 
-from ..adapters.mailer.base import MailerPort
-from ..adapters.mailer.console import ConsoleMailer
-from ..adapters.mailer.smtp import SmtpMailer
 from ..adapters.notifier.base import NotifierPort
 from ..adapters.storage.base import StoragePort
 from ..auth.models import User
@@ -61,21 +58,6 @@ def get_cert_prober():
 def get_login_limiter() -> LoginLimiter:
     """Process-wide login rate limiter."""
     return LoginLimiter()
-
-
-@lru_cache(maxsize=1)
-def get_mailer() -> MailerPort:
-    """Mailer for the daily digest."""
-    s = get_settings()
-    if s.mailer == "smtp":
-        return SmtpMailer(
-            host=s.smtp_host,
-            port=s.smtp_port,
-            username=s.smtp_user,
-            password=s.smtp_pass,
-            sender=s.smtp_from or s.smtp_user,
-        )
-    return ConsoleMailer()
 
 
 @lru_cache(maxsize=1)

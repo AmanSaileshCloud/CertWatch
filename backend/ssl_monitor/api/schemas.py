@@ -106,10 +106,6 @@ class BulkDomainResult(BaseModel):
     failed: list[dict]
 
 
-class DigestIn(BaseModel):
-    email: str
-
-
 class CertOut(BaseModel):
     """Full leaf-certificate details (fetched on demand for the detail view)."""
 

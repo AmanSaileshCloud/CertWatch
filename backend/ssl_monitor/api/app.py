@@ -21,7 +21,6 @@ from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from ..adapters.mailer.base import MailerPort
 from ..adapters.notifier.base import NotifierPort
 from ..adapters.storage.base import StoragePort
 from ..auth.models import User
@@ -30,6 +29,7 @@ from ..auth.users import UserStore
 from ..config.settings import Settings
 from ..core.models import Alert, Status
 from ..services.checker import ProbeFn, refresh_status, run_check
+from ..services.digest import render_digest_html
 from ..services.domains import (
     DomainExists,
     DomainNotFound,
@@ -37,7 +37,6 @@ from ..services.domains import (
     InvalidEmail,
     add_domain,
     delete_domain,
-    is_valid_email,
     list_domains,
     update_domain,
 )
@@ -47,7 +46,6 @@ from .dependencies import (
     get_cert_prober,
     get_current_user,
     get_login_limiter,
-    get_mailer,
     get_notifier,
     get_probe,
     get_storage,
@@ -62,7 +60,6 @@ from .schemas import (
     CertOut,
     ChangePasswordIn,
     CheckSummary,
-    DigestIn,
     DomainIn,
     DomainOut,
     DomainUpdateIn,
@@ -84,10 +81,10 @@ for _origin in os.environ.get("CORS_ORIGINS", "").split(","):
     if _origin:
         ALLOWED_ORIGINS.append(_origin)
 
-# The API runs under uvicorn, which never configures our app loggers — so mailer
-# and auth log lines (including "OTP for …" and SMTP failures) were invisible.
-# Attach one stdout handler to the ssl_monitor tree at INFO so operators can see
-# exactly what the mailer/checker are doing.
+# The API runs under uvicorn, which never configures our app loggers — so auth
+# and notifier log lines (including SES failures) were invisible. Attach one
+# stdout handler to the ssl_monitor tree at INFO so operators can see exactly
+# what the notifier/checker are doing.
 _app_root = logging.getLogger("ssl_monitor")
 if not _app_root.handlers:
     _handler = logging.StreamHandler()
@@ -360,21 +357,22 @@ def get_cert(
     )
 
 
-@app.post("/checks/digest", response_model=MessageOut)
-def send_digest(
-    body: DigestIn,
+@app.get("/checks/digest")
+def download_digest(
     storage: StoragePort = Depends(get_storage),
-    mailer: MailerPort = Depends(get_mailer),
     _admin: User = Depends(require_admin),
-) -> MessageOut:
+) -> Response:
     # Admin-only: the digest discloses the full monitored-domain inventory.
-    if not is_valid_email(body.email):
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid recipient email"
-        )
     domains = list_domains(storage)
-    mailer.send_digest(body.email, domains)
-    return MessageOut(message=f"Digest sent to {body.email}")
+    html = render_digest_html(domains)
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return Response(
+        content=html,
+        media_type="text/html",
+        headers={
+            "Content-Disposition": f'attachment; filename="certwatch-digest-{stamp}.html"'
+        },
+    )
 
 
 @app.post("/checks/run", response_model=CheckSummary)

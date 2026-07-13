@@ -2338,15 +2338,8 @@ body {
 .bulk-modal__badge--err { background: rgba(248,113,113,0.15); color: var(--expired); }
 .bulk-modal__done-btn { margin-top: 14px; }
 
-/* ── Digest modal ─────────────────────────────────────── */
+/* ── Compact modal (change-password) ──────────────────── */
 .digest-modal { max-width: 460px; }
-.digest-modal__row {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  margin-top: 4px;
-}
-.digest-modal__row .addform__input { flex: 1; }
 
 /* ── Drawer actions row ───────────────────────────────── */
 .drawer__actions {

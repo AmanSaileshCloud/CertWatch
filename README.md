@@ -28,7 +28,7 @@ AWS SES/SNS used only for alert delivery. No Lambda, no DynamoDB, no Docker.
 - **24×7 checker** — probes all domains continuously (see the runner below).
 - **Add / bulk-import / delete** domains, search + status filters, CSV/JSON export.
 - **Alerts** — per-threshold, de-duplicated, to per-domain recipients via SES/SNS.
-- **Daily digest** email (admin) + per-domain **test alert**.
+- **Downloadable HTML digest** (admin) + per-domain **test alert**.
 - **Auth** — username/password JWT with an in-app **Users** admin panel (roles).
 - **Dark / light / auto** theme, health-ring overview, 7-day forecast.
 
@@ -113,8 +113,6 @@ systemd service (see DEPLOY.md).
 | `AWS_REGION` | `us-east-1` | region for SES/SNS |
 | `THRESHOLD_DAYS` | `30,14,7,1` | alert thresholds (days) |
 | `TLS_TIMEOUT_SECONDS` | `5` | per-host connect timeout |
-| `MAILER` | `console` | `console` or `smtp` (daily digest email) |
-| `SMTP_HOST/PORT/USER/PASS/FROM` | — | SMTP provider for the digest (any relay) |
 
 > The API **refuses to start** with `AUTH_ENABLED=true` while `AUTH_SECRET` is the
 > built-in default — so a misconfigured deploy fails loudly.
@@ -156,8 +154,7 @@ backend/
     adapters/
       storage/   # StoragePort + sqlite + memory
       notifier/  # NotifierPort + console + sns_ses  (alerts)
-      mailer/    # MailerPort + console + smtp        (daily digest)
-    services/    # checker + domains orchestration (adapter-agnostic)
+    services/    # checker + domains + digest renderer (adapter-agnostic)
     handlers/    # _deps wiring (config → adapters) + checker entry
     auth/        # JWT security + JSON user store + models
     api/         # FastAPI app, schemas, dependencies
@@ -183,7 +180,7 @@ DEPLOY.md        # single-server deployment guide
 | `POST` | `/domains/bulk` | add many at once |
 | `POST` | `/domains/{domain}/test-alert` | send a test alert |
 | `POST` | `/checks/run` | run the checker over all stored domains |
-| `POST` | `/checks/digest` | email a status digest (admin only) |
+| `GET` | `/checks/digest` | download an HTML status digest (admin only) |
 | `GET` | `/health` | liveness |
 
 ---
@@ -200,6 +197,6 @@ DEPLOY.md        # single-server deployment guide
   crossed threshold — and only when more urgent than the last one sent
   (`last_alert_threshold`), so the 24×7 loop doesn't re-page you. A renewal resets
   the dedup state.
-- **Ports & adapters.** Storage, notifier, and mailer are `Protocol`s;
+- **Ports & adapters.** Storage and notifier are `Protocol`s;
   `handlers/_deps.py` is the single seam that turns `Settings` into concrete
-  implementations (SQLite, SES/SNS, SMTP).
+  implementations (SQLite, SES/SNS).

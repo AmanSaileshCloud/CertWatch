@@ -23,7 +23,7 @@ instance**. No Lambda, API Gateway, DynamoDB, CloudFront, or S3.
 | Storage | **SQLite** file at `/opt/certwatch/data/certwatch.db` |
 | Alerts | **AWS SNS + SES** via the EC2 IAM role (per manager) |
 | Login / users | **Username/password JWT** — self-contained, `auth_users.json` on the box |
-| Digest email (optional) | any SMTP provider (`MAILER=smtp`) |
+| Digest | On-demand **HTML download** from the dashboard (no email needed) |
 | Frontend | Static build served by **Nginx**; same-origin, no CORS |
 
 ---
@@ -94,8 +94,7 @@ sudo systemctl restart certwatch-api
 ```
 
 At minimum set: `AUTH_SECRET` (`openssl rand -hex 32`), `AUTH_BOOTSTRAP_PASSWORD`
-(the first admin password), `SNS_TOPIC_ARN`, `ALERT_EMAIL`, and the `SMTP_*`
-values only if you use the digest.
+(the first admin password), `SNS_TOPIC_ARN`, and `ALERT_EMAIL`.
 
 > The API **refuses to start** with `AUTH_ENABLED=true` while `AUTH_SECRET` is
 > the built-in default — a misconfigured deploy fails loudly instead of shipping

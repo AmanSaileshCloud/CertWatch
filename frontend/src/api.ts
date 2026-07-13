@@ -124,11 +124,25 @@ export const api = {
       method: "POST",
     }),
 
-  sendDigest: (email: string) =>
-    request<MessageResponse>("/checks/digest", {
-      method: "POST",
-      body: JSON.stringify({ email }),
-    }),
+  /** Fetch the rendered digest HTML (admin-only) for local download. */
+  downloadDigest: async (): Promise<string> => {
+    const token = getToken();
+    let res: Response;
+    try {
+      res = await fetch(`${BASE}/checks/digest`, {
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+    } catch {
+      throw new ApiError("Cannot reach the API. Is it running on :8000?");
+    }
+    if (res.status === 401) {
+      clearToken();
+      window.dispatchEvent(new Event("auth:unauthorized"));
+      throw new ApiError(await errorMessage(res));
+    }
+    if (!res.ok) throw new ApiError(await errorMessage(res));
+    return res.text();
+  },
 
   runChecks: () => request<CheckSummary>("/checks/run", { method: "POST" }),
 };
