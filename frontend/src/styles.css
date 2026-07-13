@@ -2143,6 +2143,19 @@ body {
   background: var(--accent-dim);
   color: var(--accent);
 }
+.export-menu__item:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.export-menu__item:disabled:hover {
+  background: none;
+  color: var(--ink);
+}
+.export-menu__divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--line-bright);
+}
 
 /* ── Theme cycle button ───────────────────────────────── */
 .theme-cycle {
