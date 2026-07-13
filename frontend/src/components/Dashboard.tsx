@@ -4,7 +4,7 @@ import { api, ApiError } from "../api";
 import type { DomainRecord, Status } from "../types";
 import { useAuth } from "../auth/AuthContext";
 import { useToast } from "./Toast";
-import { AddDomainForm } from "./AddDomainForm";
+import { AddDomainModal } from "./AddDomainModal";
 import { AuroraBackground } from "./AuroraBackground";
 import { DomainTable } from "./DomainTable";
 import { DomainDetail } from "./DomainDetail";
@@ -72,6 +72,7 @@ export function Dashboard({ preference, onToggleTheme }: DashboardProps) {
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [filterQuery, setFilterQuery] = useState("");
   const [filterStatus, setFilterStatus] = useState<Status | "all">("all");
+  const [showAddDomain, setShowAddDomain] = useState(false);
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [showUsers, setShowUsers] = useState(false);
 
@@ -122,7 +123,7 @@ export function Dashboard({ preference, onToggleTheme }: DashboardProps) {
     toast.show(`Removed ${keys.length} domain${keys.length !== 1 ? "s" : ""}`, "info");
   }
 
-  async function handleAdd(domain: string, port: number) {
+  async function handleAdd(domain: string, port: number): Promise<boolean> {
     setBusy(true);
     try {
       const created = await api.addDomain(domain, port);
@@ -130,8 +131,10 @@ export function Dashboard({ preference, onToggleTheme }: DashboardProps) {
       setHighlightKey(created.domain);
       window.setTimeout(() => setHighlightKey(null), 1400);
       toast.show(`${domain} is now being monitored`, "success");
+      return true;
     } catch (e) {
       toast.show(e instanceof ApiError ? e.message : "Could not add domain", "error");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -176,6 +179,15 @@ export function Dashboard({ preference, onToggleTheme }: DashboardProps) {
 
           <div className="header__actions">
             <ThemeCycleButton preference={preference} onCycle={onToggleTheme} />
+
+            <button
+              className="btn btn--primary"
+              onClick={() => setShowAddDomain(true)}
+              title="Add a single domain to monitor"
+            >
+              <span className="btn__plus" aria-hidden="true" style={{ marginRight: 5 }}>+</span>
+              Add domain
+            </button>
 
             <button
               className="btn btn--ghost"
@@ -239,8 +251,7 @@ export function Dashboard({ preference, onToggleTheme }: DashboardProps) {
             )}
           </AnimatePresence>
 
-          {/* Add form + search + export row */}
-          <AddDomainForm onAdd={handleAdd} busy={busy} />
+          {/* Search + filter row */}
           <SearchFilter
             query={filterQuery}
             status={filterStatus}
@@ -359,6 +370,16 @@ export function Dashboard({ preference, onToggleTheme }: DashboardProps) {
         <AnimatePresence>
           {showUsers && (
             <UsersAdmin onClose={() => setShowUsers(false)} currentUser={user?.username} />
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {showAddDomain && (
+            <AddDomainModal
+              onClose={() => setShowAddDomain(false)}
+              onAdd={handleAdd}
+              busy={busy}
+            />
           )}
         </AnimatePresence>
 

@@ -126,7 +126,6 @@ body {
 /* Lift panels with a subtle shadow instead of dark borders */
 [data-theme="light"] .chip,
 [data-theme="light"] .summary__total,
-[data-theme="light"] .addform,
 [data-theme="light"] .tablewrap,
 [data-theme="light"] .empty,
 [data-theme="light"] .detail,
@@ -158,7 +157,6 @@ body {
 }
 
 /* Inputs */
-[data-theme="light"] .addform input,
 [data-theme="light"] .login__field input,
 [data-theme="light"] .userform input {
   background: #f8faff;
@@ -166,7 +164,6 @@ body {
   color: var(--ink);
 }
 
-[data-theme="light"] .addform input:focus,
 [data-theme="light"] .login__field input:focus,
 [data-theme="light"] .userform input:focus {
   border-color: var(--accent);
@@ -516,54 +513,11 @@ body {
 .chip--expired::before { background: var(--expired); }
 .chip--unreachable::before { background: var(--unreach); }
 
-/* ── Add form ─────────────────────────────────────── */
-.addform {
-  display: flex;
-  align-items: flex-end;
-  gap: 12px;
-  padding: 16px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  margin-bottom: 18px;
-}
-
+/* ── Form field column (shared by the users admin form) ── */
 .addform__field {
   display: flex;
   flex-direction: column;
   gap: 6px;
-}
-
-.addform__field--host {
-  flex: 1;
-}
-
-.addform__field--port {
-  width: 90px;
-}
-
-.addform label {
-  font-size: 10px;
-  letter-spacing: 1.5px;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-}
-
-.addform input {
-  font-family: var(--mono);
-  font-size: 14px;
-  color: var(--ink);
-  background: var(--bg);
-  border: 1px solid var(--line-bright);
-  border-radius: 8px;
-  padding: 10px 12px;
-  outline: none;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
-
-.addform input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-dim);
 }
 
 /* ── Banners ──────────────────────────────────────── */
@@ -849,8 +803,6 @@ body {
 @media (max-width: 720px) {
   .summary { flex-direction: column; }
   .summary__chips { grid-template-columns: repeat(2, 1fr); }
-  .addform { flex-wrap: wrap; }
-  .addform__field--host { flex-basis: 100%; }
   .col-expiry { display: none; }
   .header { flex-direction: column; gap: 18px; align-items: flex-start; }
 }
@@ -1701,11 +1653,6 @@ body {
 
 :root:not([data-theme="light"]) .table thead th {
   background: rgba(22, 29, 40, 0.95);
-}
-
-:root:not([data-theme="light"]) .addform {
-  background: rgba(17, 22, 31, 0.88);
-  border-color: rgba(255, 255, 255, 0.07);
 }
 
 :root:not([data-theme="light"]) .summary__total {
