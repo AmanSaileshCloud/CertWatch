@@ -126,7 +126,6 @@ def run_check(
                     days_remaining=updated.days_remaining,
                     threshold=decision.threshold,
                     not_after=updated.not_after,
-                    recipients=list(updated.notify_emails),
                 )
             )
         outcomes.append(

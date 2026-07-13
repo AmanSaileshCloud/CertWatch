@@ -5,15 +5,14 @@ the single-EC2 deployment: zero external infrastructure, one file on disk,
 plenty fast for a dashboard's write volume (a handful of domains, checked a few
 times a day).
 
-Serialization stays at this boundary, so the core model remains pure. Timestamps are ISO8601 UTC strings; list/bool
-fields are JSON-encoded in a single column. A short-lived connection is opened
-per call so the adapter is safe to share across threads (uvicorn workers) and
-the standalone checker process alike.
+Serialization stays at this boundary, so the core model remains pure.
+Timestamps are ISO8601 UTC strings; booleans are stored as 0/1 integers. A
+short-lived connection is opened per call so the adapter is safe to share across
+threads (uvicorn workers) and the standalone checker process alike.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
 from collections.abc import Iterator
@@ -35,7 +34,6 @@ CREATE TABLE IF NOT EXISTS domains (
     last_checked_at      TEXT,
     last_error           TEXT,
     last_alert_threshold INTEGER,
-    notify_emails        TEXT NOT NULL DEFAULT '[]',
     alerts_enabled       INTEGER NOT NULL DEFAULT 1
 );
 """
@@ -63,7 +61,6 @@ def _row_to_record(row: sqlite3.Row) -> DomainRecord:
         last_alert_threshold=(
             int(row["last_alert_threshold"]) if row["last_alert_threshold"] is not None else None
         ),
-        notify_emails=list(json.loads(row["notify_emails"] or "[]")),
         alerts_enabled=bool(row["alerts_enabled"]),
     )
 
@@ -80,7 +77,6 @@ def _record_to_params(record: DomainRecord) -> dict[str, Any]:
         "last_checked_at": _iso(record.last_checked_at),
         "last_error": record.last_error,
         "last_alert_threshold": record.last_alert_threshold,
-        "notify_emails": json.dumps(list(record.notify_emails)),
         "alerts_enabled": 1 if record.alerts_enabled else 0,
     }
 

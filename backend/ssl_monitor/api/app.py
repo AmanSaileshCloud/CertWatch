@@ -34,7 +34,6 @@ from ..services.domains import (
     DomainExists,
     DomainNotFound,
     InvalidDomain,
-    InvalidEmail,
     add_domain,
     delete_domain,
     list_domains,
@@ -256,13 +255,10 @@ def patch_domain(
         record = update_domain(
             storage,
             domain,
-            notify_emails=body.notify_emails,
             alerts_enabled=body.alerts_enabled,
         )
     except DomainNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    except InvalidEmail as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     return DomainOut.from_record(record)
 
 
@@ -315,7 +311,6 @@ def test_alert(
         days_remaining=record.days_remaining if record.days_remaining is not None else 14,
         threshold=14,
         not_after=record.not_after,
-        recipients=record.notify_emails,
     )
     notifier.notify(alert)
     return MessageOut(

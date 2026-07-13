@@ -19,13 +19,6 @@ _HOST_RE = re.compile(
 )
 
 
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
-
-def is_valid_email(email: str) -> bool:
-    return bool(_EMAIL_RE.match(email.strip().lower()))
-
-
 class DomainError(ValueError):
     """Base for domain validation/state errors."""
 
@@ -39,10 +32,6 @@ class DomainExists(DomainError):
 
 
 class DomainNotFound(DomainError):
-    pass
-
-
-class InvalidEmail(DomainError):
     pass
 
 
@@ -81,32 +70,16 @@ def delete_domain(storage: StoragePort, domain: str) -> bool:
     return existed
 
 
-def _normalize_emails(emails: list[str]) -> list[str]:
-    cleaned: list[str] = []
-    for raw in emails:
-        email = raw.strip().lower()
-        if not email:
-            continue
-        if not is_valid_email(email):
-            raise InvalidEmail(f"invalid email: {raw!r}")
-        if email not in cleaned:
-            cleaned.append(email)
-    return cleaned
-
-
 def update_domain(
     storage: StoragePort,
     domain: str,
     *,
-    notify_emails: list[str] | None = None,
     alerts_enabled: bool | None = None,
 ) -> DomainRecord:
     """Update a domain's notification config. Only provided fields change."""
     record = storage.get(domain)
     if record is None:
         raise DomainNotFound(f"not monitored: {domain}")
-    if notify_emails is not None:
-        record.notify_emails = _normalize_emails(notify_emails)
     if alerts_enabled is not None:
         record.alerts_enabled = alerts_enabled
     storage.put(record)

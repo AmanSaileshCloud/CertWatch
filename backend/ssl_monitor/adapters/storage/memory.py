@@ -18,8 +18,8 @@ class MemoryStorage:
 
     @staticmethod
     def _copy(record: DomainRecord) -> DomainRecord:
-        # replace() is shallow — copy the mutable list field explicitly.
-        return replace(record, notify_emails=list(record.notify_emails))
+        # Detach the stored record so callers mutating theirs can't change ours.
+        return replace(record)
 
     def put(self, record: DomainRecord) -> None:
         # Copy so callers mutating their record don't change stored state.

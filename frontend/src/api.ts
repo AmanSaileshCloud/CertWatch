@@ -103,7 +103,7 @@ export const api = {
 
   updateDomain: (
     domainKey: string,
-    payload: { notify_emails?: string[]; alerts_enabled?: boolean },
+    payload: { alerts_enabled?: boolean },
   ) =>
     request<DomainRecord>(`/domains/${encodeURIComponent(domainKey)}`, {
       method: "PATCH",

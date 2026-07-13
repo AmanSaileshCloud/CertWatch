@@ -25,7 +25,6 @@ class DomainOut(BaseModel):
     last_error: str | None
     last_alert_threshold: int | None
     created_at: datetime
-    notify_emails: list[str]
     alerts_enabled: bool
 
     @classmethod
@@ -41,13 +40,11 @@ class DomainOut(BaseModel):
             last_error=r.last_error,
             last_alert_threshold=r.last_alert_threshold,
             created_at=r.created_at,
-            notify_emails=r.notify_emails,
             alerts_enabled=r.alerts_enabled,
         )
 
 
 class DomainUpdateIn(BaseModel):
-    notify_emails: list[str] | None = None
     alerts_enabled: bool | None = None
 
 

@@ -42,15 +42,12 @@ class SnsSesNotifier:
                 logger.error("SNS publish failed for %s: %s", alert.domain, exc)
 
         # SES carries the rich HTML card (with the plain text as a fallback part).
-        # Prefer the domain's own recipients; fall back to the global ALERT_EMAIL.
-        recipients = alert.recipients or (
-            [self._settings.alert_email] if self._settings.alert_email else []
-        )
-        if recipients and self._settings.alert_email:
+        # Sent to the global ALERT_EMAIL.
+        if self._settings.alert_email:
             try:
                 self._ses.send_email(
                     Source=self._settings.alert_email,
-                    Destination={"ToAddresses": recipients},
+                    Destination={"ToAddresses": [self._settings.alert_email]},
                     Message={
                         "Subject": {"Data": subject},
                         "Body": {

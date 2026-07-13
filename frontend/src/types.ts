@@ -11,7 +11,6 @@ export interface DomainRecord {
   last_error: string | null;
   last_alert_threshold: number | null;
   created_at: string;
-  notify_emails: string[];
   alerts_enabled: boolean;
 }
 

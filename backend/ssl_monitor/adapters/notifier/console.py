@@ -21,10 +21,8 @@ class ConsoleNotifier:
 
     def notify(self, alert: Alert) -> None:
         self.sent.append(alert)
-        recipients = ", ".join(alert.recipients) if alert.recipients else "(global default)"
         logger.warning(
-            "ALERT %s | %s | recipients=%s",
+            "ALERT %s | %s",
             format_subject(alert),
             format_body(alert),
-            recipients,
         )

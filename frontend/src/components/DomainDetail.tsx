@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { api, ApiError } from "../api";
 import type { CertInfo, DomainRecord } from "../types";
@@ -18,9 +18,7 @@ function fmt(iso: string | null): string {
 
 export function DomainDetail({ record, onClose, onSaved }: Props) {
   const toast = useToast();
-  const [emails, setEmails] = useState<string[]>(record.notify_emails);
   const [alertsEnabled, setAlertsEnabled] = useState(record.alerts_enabled);
-  const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -45,22 +43,7 @@ export function DomainDetail({ record, onClose, onSaved }: Props) {
     return () => { cancelled = true; };
   }, [record.domain]);
 
-  const dirty =
-    alertsEnabled !== record.alerts_enabled ||
-    emails.join(",") !== record.notify_emails.join(",");
-
-  function addEmail() {
-    const e = draft.trim().toLowerCase();
-    if (e && !emails.includes(e)) setEmails([...emails, e]);
-    setDraft("");
-  }
-
-  function onKey(e: KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "Enter" || e.key === ",") {
-      e.preventDefault();
-      addEmail();
-    }
-  }
+  const dirty = alertsEnabled !== record.alerts_enabled;
 
   async function sendTestAlert() {
     setTestingAlert(true);
@@ -79,7 +62,6 @@ export function DomainDetail({ record, onClose, onSaved }: Props) {
     setError(null);
     try {
       const updated = await api.updateDomain(record.domain, {
-        notify_emails: emails,
         alerts_enabled: alertsEnabled,
       });
       setSaved(true);
@@ -202,30 +184,9 @@ export function DomainDetail({ record, onClose, onSaved }: Props) {
             </span>
           </label>
 
-          <div className="drawer__field">
-            <span className="drawer__field-label">Recipient emails</span>
-            <div className="chips">
-              {emails.map((e) => (
-                <span key={e} className="chip-tag">
-                  {e}
-                  <button onClick={() => setEmails(emails.filter((x) => x !== e))} aria-label={`remove ${e}`}>
-                    ✕
-                  </button>
-                </span>
-              ))}
-              <input
-                className="chips__input"
-                value={draft}
-                onChange={(ev) => setDraft(ev.target.value)}
-                onKeyDown={onKey}
-                onBlur={addEmail}
-                placeholder={emails.length ? "add another…" : "ops@company.com"}
-              />
-            </div>
-            <p className="drawer__hint">
-              Press Enter to add. Leave empty to use the global default recipient.
-            </p>
-          </div>
+          <p className="drawer__hint">
+            Alerts are emailed to the global recipient configured on the server.
+          </p>
 
           {error && <div className="banner banner--error">{error}</div>}
 

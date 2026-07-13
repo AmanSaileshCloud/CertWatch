@@ -74,8 +74,7 @@ class AlertDecision:
 class Alert:
     """A notification payload handed to a notifier adapter.
 
-    ``recipients`` are the per-domain email addresses to notify; empty means the
-    notifier falls back to its global recipient (e.g. ``ALERT_EMAIL``).
+    The notifier sends to its global recipient (e.g. ``ALERT_EMAIL``).
     """
 
     domain: str
@@ -83,7 +82,6 @@ class Alert:
     days_remaining: int | None
     threshold: int | None
     not_after: datetime | None = None
-    recipients: list[str] = field(default_factory=list)
 
 
 def make_domain_key(host: str, port: int = 443) -> str:
@@ -112,7 +110,6 @@ class DomainRecord:
     last_error: str | None = None
     last_alert_threshold: int | None = None
     # Per-domain notification config
-    notify_emails: list[str] = field(default_factory=list)
     alerts_enabled: bool = True
 
     @classmethod
