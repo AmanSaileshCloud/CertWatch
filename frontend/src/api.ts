@@ -124,8 +124,8 @@ export const api = {
       method: "POST",
     }),
 
-  /** Fetch the rendered digest HTML (admin-only) for local download. */
-  downloadDigest: async (): Promise<string> => {
+  /** Fetch the rendered status report PDF (admin-only) for local download. */
+  downloadReport: async (): Promise<Blob> => {
     const token = getToken();
     let res: Response;
     try {
@@ -141,7 +141,7 @@ export const api = {
       throw new ApiError(await errorMessage(res));
     }
     if (!res.ok) throw new ApiError(await errorMessage(res));
-    return res.text();
+    return res.blob();
   },
 
   runChecks: () => request<CheckSummary>("/checks/run", { method: "POST" }),

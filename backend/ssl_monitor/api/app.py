@@ -29,7 +29,7 @@ from ..auth.users import UserStore
 from ..config.settings import Settings
 from ..core.models import Alert, Status
 from ..services.checker import ProbeFn, refresh_status, run_check
-from ..services.digest import render_digest_html
+from ..services.digest import render_digest_pdf
 from ..services.domains import (
     DomainExists,
     DomainNotFound,
@@ -362,15 +362,15 @@ def download_digest(
     storage: StoragePort = Depends(get_storage),
     _admin: User = Depends(require_admin),
 ) -> Response:
-    # Admin-only: the digest discloses the full monitored-domain inventory.
+    # Admin-only: the report discloses the full monitored-domain inventory.
     domains = list_domains(storage)
-    html = render_digest_html(domains)
+    pdf = render_digest_pdf(domains)
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return Response(
-        content=html,
-        media_type="text/html",
+        content=pdf,
+        media_type="application/pdf",
         headers={
-            "Content-Disposition": f'attachment; filename="certwatch-digest-{stamp}.html"'
+            "Content-Disposition": f'attachment; filename="certwatch-report-{stamp}.pdf"'
         },
     )
 

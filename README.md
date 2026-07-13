@@ -28,7 +28,7 @@ AWS SES/SNS used only for alert delivery. No Lambda, no DynamoDB, no Docker.
 - **24×7 checker** — probes all domains continuously (see the runner below).
 - **Add / bulk-import / delete** domains, search + status filters, CSV/JSON export.
 - **Alerts** — per-threshold, de-duplicated, to per-domain recipients via SES/SNS.
-- **Downloadable HTML digest** (admin) + per-domain **test alert**.
+- **Downloadable PDF status report** (admin) + per-domain **test alert**.
 - **Auth** — username/password JWT with an in-app **Users** admin panel (roles).
 - **Dark / light / auto** theme, health-ring overview, 7-day forecast.
 
@@ -180,7 +180,7 @@ DEPLOY.md        # single-server deployment guide
 | `POST` | `/domains/bulk` | add many at once |
 | `POST` | `/domains/{domain}/test-alert` | send a test alert |
 | `POST` | `/checks/run` | run the checker over all stored domains |
-| `GET` | `/checks/digest` | download an HTML status digest (admin only) |
+| `GET` | `/checks/digest` | download a PDF status report (admin only) |
 | `GET` | `/health` | liveness |
 
 ---

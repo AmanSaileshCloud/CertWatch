@@ -74,7 +74,7 @@ export function Dashboard({ preference, onToggleTheme }: DashboardProps) {
   const [filterStatus, setFilterStatus] = useState<Status | "all">("all");
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [showUsers, setShowUsers] = useState(false);
-  const [downloadingDigest, setDownloadingDigest] = useState(false);
+  const [downloadingReport, setDownloadingReport] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -151,24 +151,24 @@ export function Dashboard({ preference, onToggleTheme }: DashboardProps) {
     }
   }
 
-  async function handleDownloadDigest() {
-    setDownloadingDigest(true);
+  async function handleDownloadReport() {
+    setDownloadingReport(true);
     try {
-      const html = await api.downloadDigest();
+      const blob = await api.downloadReport();
       const stamp = new Date().toISOString().slice(0, 10);
-      const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+      const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `certwatch-digest-${stamp}.html`;
+      a.download = `certwatch-report-${stamp}.pdf`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      toast.show("Digest downloaded", "success");
+      toast.show("Report downloaded", "success");
     } catch (e) {
-      toast.show(e instanceof ApiError ? e.message : "Could not download digest", "error");
+      toast.show(e instanceof ApiError ? e.message : "Could not download report", "error");
     } finally {
-      setDownloadingDigest(false);
+      setDownloadingReport(false);
     }
   }
 
@@ -226,14 +226,14 @@ export function Dashboard({ preference, onToggleTheme }: DashboardProps) {
             {user?.role === "admin" && (
               <button
                 className="btn btn--ghost"
-                onClick={handleDownloadDigest}
-                disabled={downloadingDigest}
-                title="Download an HTML digest of all domain statuses"
+                onClick={handleDownloadReport}
+                disabled={downloadingReport}
+                title="Download a PDF report of all domain statuses"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ marginRight: 5, verticalAlign: "middle" }}>
                   <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
                 </svg>
-                {downloadingDigest ? "Preparing…" : "Digest"}
+                {downloadingReport ? "Preparing…" : "Download Report"}
               </button>
             )}
 

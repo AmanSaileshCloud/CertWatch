@@ -23,7 +23,7 @@ instance**. No Lambda, API Gateway, DynamoDB, CloudFront, or S3.
 | Storage | **SQLite** file at `/opt/certwatch/data/certwatch.db` |
 | Alerts | **AWS SNS + SES** via the EC2 IAM role (per manager) |
 | Login / users | **Username/password JWT** — self-contained, `auth_users.json` on the box |
-| Digest | On-demand **HTML download** from the dashboard (no email needed) |
+| Report | On-demand **PDF download** from the dashboard (no email needed) |
 | Frontend | Static build served by **Nginx**; same-origin, no CORS |
 
 ---
