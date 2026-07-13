@@ -39,6 +39,16 @@ def _load_dotenv(path: str = ".env") -> None:
         pass
 
 
+def _parse_emails(raw: str) -> list[str]:
+    """Parse ``"a@x.com, b@y.com"`` → ``["a@x.com", "b@y.com"]`` (deduped)."""
+    seen: list[str] = []
+    for part in raw.split(","):
+        email = part.strip().lower()
+        if email and email not in seen:
+            seen.append(email)
+    return seen
+
+
 def _parse_thresholds(raw: str) -> list[int]:
     """Parse ``"30,14,7,1"`` → ``[30, 14, 7, 1]`` (deduped, descending)."""
     values = {int(part.strip()) for part in raw.split(",") if part.strip()}
@@ -56,7 +66,8 @@ class Settings:
     aws_endpoint_url: str | None  # LocalStack URL locally; None on real AWS
     sns_topic_arn: str | None
     notifier: str  # "console" | "sns_ses"
-    alert_email: str | None
+    alert_email: str | None  # SES sender ("From") and default recipient
+    alert_recipients: list[str]  # extra "To" addresses (ALERT_RECIPIENTS)
     threshold_days: list[int]
     tls_timeout_seconds: float
     # Auth — username/password JWT (self-contained, no external service).
@@ -90,6 +101,7 @@ class Settings:
             sns_topic_arn=(e.get("SNS_TOPIC_ARN", "").strip() or None),
             notifier=e.get("NOTIFIER", "console").strip().lower(),
             alert_email=(e.get("ALERT_EMAIL", "").strip() or None),
+            alert_recipients=_parse_emails(e.get("ALERT_RECIPIENTS", "")),
             threshold_days=_parse_thresholds(
                 e.get("THRESHOLD_DAYS", DEFAULT_THRESHOLD_DAYS)
             ),
