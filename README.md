@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # CERTWATCH — SSL Certificate Expiry Dashboard
 
 Monitor TLS certificate expiry across a fleet of domains. Add domains, a checker
@@ -200,3 +201,6 @@ DEPLOY.md        # single-server deployment guide
 - **Ports & adapters.** Storage and notifier are `Protocol`s;
   `handlers/_deps.py` is the single seam that turns `Settings` into concrete
   implementations (SQLite, SES/SNS).
+=======
+# CertWatch
+>>>>>>> 5011c2a43f1a07adbc7430a9e6b0d86b2d47a933
