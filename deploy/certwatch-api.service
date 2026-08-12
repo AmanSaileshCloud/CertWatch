@@ -1,0 +1,22 @@
+[Unit]
+Description=CERTWatch API (FastAPI via uvicorn)
+After=network.target
+
+[Service]
+Type=exec
+User=certwatch
+Group=certwatch
+WorkingDirectory=/opt/certwatch/app
+EnvironmentFile=/etc/certwatch/certwatch.env
+ExecStart=/opt/certwatch/venv/bin/uvicorn backend.ssl_monitor.api.app:app --host 127.0.0.1 --port 8000 --workers 2
+Restart=always
+RestartSec=3
+
+# Hardening — the app only ever writes to its data dir.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/certwatch/data
+
+[Install]
+WantedBy=multi-user.target

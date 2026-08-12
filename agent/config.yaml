@@ -1,0 +1,23 @@
+# CertWatch Agent Configuration
+agent_id: "customer-agent-001"
+
+# Your CertWatch central API URL
+api_url: "https://your-certwatch-server.com"
+
+# Secret key — must match AGENT_API_KEY on the CertWatch server
+api_key: "CHANGE_ME_STRONG_SECRET_KEY"
+
+# Check interval in seconds (300 = every 5 minutes)
+interval_seconds: 300
+
+# TLS connection timeout per domain
+tls_timeout: 10.0
+
+# Private domains to monitor inside this network
+domains:
+  - host: "ppitest.internal.tpml.in"
+    port: 443
+  - host: "app.internal.local"
+    port: 443
+  - host: "db.internal.company.com"
+    port: 443
