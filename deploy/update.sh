@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+#
+# Redeploy CERTWatch after a code change. Run from an updated checkout:
+#   sudo bash deploy/update.sh
+#
+# Syncs code, reinstalls deps, rebuilds the frontend, and restarts services.
+set -euo pipefail
+
+APP_USER=certwatch
+APP_HOME=/opt/certwatch
+APP_DIR=$APP_HOME/app
+VENV_DIR=$APP_HOME/venv
+SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Run as root:  sudo bash deploy/update.sh" >&2
+  exit 1
+fi
+
+echo "==> Syncing code"
+rsync -a --delete \
+  --exclude '.git' --exclude 'node_modules' --exclude '.venv' \
+  --exclude 'frontend/node_modules' --exclude 'frontend/dist' \
+  "$SRC_DIR"/ "$APP_DIR"/
+
+echo "==> Updating Python deps"
+"$VENV_DIR/bin/pip" install -e "$APP_DIR"
+
+echo "==> Rebuilding frontend"
+pushd "$APP_DIR/frontend" >/dev/null
+npm ci
+VITE_API_URL="" npm run build
+popd >/dev/null
+
+echo "==> Refreshing systemd units + Nginx"
+cp "$APP_DIR/deploy/certwatch-api.service"          /etc/systemd/system/
+cp "$APP_DIR/deploy/certwatch-checker.service"      /etc/systemd/system/
+cp "$APP_DIR/deploy/certwatch-checker.timer"        /etc/systemd/system/
+cp "$APP_DIR/deploy/certwatch-checker-loop.service" /etc/systemd/system/
+
+# Security headers are `include`d by the site config — install them first, or
+# `nginx -t` below fails on a missing include.
+mkdir -p /etc/nginx/snippets
+cp "$APP_DIR/deploy/security-headers.conf" /etc/nginx/snippets/certwatch-security-headers.conf
+
+NGINX_SITE=/etc/nginx/sites-available/certwatch
+# Never overwrite a certbot-managed site: certbot --nginx rewrites this file
+# with the TLS block and redirect, and blindly copying the plain-HTTP template
+# back would silently drop the deployment to cleartext on every code update.
+if [ -f "$NGINX_SITE" ] && grep -q 'ssl_certificate' "$NGINX_SITE"; then
+  echo "    $NGINX_SITE has TLS configured — left untouched."
+else
+  cp "$APP_DIR/deploy/nginx.conf" "$NGINX_SITE"
+fi
+
+chown -R "$APP_USER:$APP_USER" "$APP_HOME"
+
+systemctl daemon-reload
+systemctl restart certwatch-api.service
+# Restart the 24x7 checker if it's the active one (the timer-based oneshot picks
+# up new code automatically on its next scheduled run, so it needs no restart).
+if systemctl is-active --quiet certwatch-checker-loop.service; then
+  systemctl restart certwatch-checker-loop.service
+fi
+nginx -t && systemctl reload nginx
+
+echo "✓ Update complete. Logs: journalctl -u certwatch-api -f"

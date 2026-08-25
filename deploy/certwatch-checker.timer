@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the CERTWatch SSL checker every 6 hours
+
+[Timer]
+# First run 5 min after boot, then every 6 hours. Persistent=true catches up
+# on a missed run if the instance was stopped past its scheduled time.
+OnBootSec=5min
+OnUnitActiveSec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
