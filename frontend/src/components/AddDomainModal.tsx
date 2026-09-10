@@ -3,19 +3,20 @@ import { motion } from "motion/react";
 
 type Props = {
   onClose: () => void;
-  onAdd: (domain: string, port: number) => Promise<boolean>;
+  onAdd: (domain: string, port: number, agentId?: string) => Promise<boolean>;
   busy: boolean;
 };
 
 export function AddDomainModal({ onClose, onAdd, busy }: Props) {
   const [domain, setDomain] = useState("");
   const [port, setPort] = useState("443");
+  const [agentId, setAgentId] = useState("");
 
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const trimmed = domain.trim();
     if (!trimmed) return;
-    const ok = await onAdd(trimmed, Number(port) || 443);
+    const ok = await onAdd(trimmed, Number(port) || 443, agentId.trim() || undefined);
     if (ok) onClose();
   }
 
@@ -59,6 +60,16 @@ export function AddDomainModal({ onClose, onAdd, busy }: Props) {
               onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))}
               inputMode="numeric"
               placeholder="443"
+            />
+          </label>
+          <label className="login__field">
+            <span>SSM managed instance ID (private host)</span>
+            <input
+              value={agentId}
+              onChange={(e) => setAgentId(e.target.value)}
+              placeholder="mi-0123456789abcdef0"
+              autoComplete="off"
+              spellCheck={false}
             />
           </label>
           <motion.button

@@ -12,6 +12,7 @@ from ..core.models import DomainRecord, Status
 class DomainIn(BaseModel):
     domain: str = Field(..., description="Bare hostname to monitor, e.g. example.com")
     port: int = Field(default=443, ge=1, le=65535)
+    agent_id: str | None = Field(default=None, description="SSM managed-instance ID for a private host")
 
 
 class DomainOut(BaseModel):

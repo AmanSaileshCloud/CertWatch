@@ -97,6 +97,9 @@ class Settings:
     # Hours an agent-managed domain may go without a report before the checker
     # treats its agent as down and alerts once.
     agent_stale_after_hours: float
+    agent_transport: str  # retained name for the SSM instance-ID transport
+    ssm_document_name: str
+    ssm_poll_interval_seconds: float
     # Auth — username/password JWT (self-contained, no external service).
     auth_enabled: bool
     auth_secret: str
@@ -175,6 +178,9 @@ class Settings:
             ),
             tls_timeout_seconds=float(e.get("TLS_TIMEOUT_SECONDS", "5")),
             agent_stale_after_hours=float(e.get("AGENT_STALE_AFTER_HOURS", "6")),
+            agent_transport=e.get("AGENT_TRANSPORT", "ssm").strip().lower(),
+            ssm_document_name=e.get("SSM_DOCUMENT_NAME", "AWS-RunShellScript").strip(),
+            ssm_poll_interval_seconds=float(e.get("SSM_POLL_INTERVAL_SECONDS", "2")),
             auth_enabled=e.get("AUTH_ENABLED", "true").strip().lower() != "false",
             auth_secret=e.get("AUTH_SECRET", INSECURE_AUTH_SECRET).strip(),
             token_expire_minutes=int(e.get("AUTH_TOKEN_EXPIRE_MINUTES", "720")),

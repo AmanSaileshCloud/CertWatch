@@ -26,6 +26,8 @@ AWS SES/SNS used only for alert delivery. No Lambda, no DynamoDB, no Docker.
 - **Live cert monitoring** — status (ok / warning / expired / unreachable), days
   remaining, expiry date, per-domain last-checked/last-error.
 - **24×7 checker** — probes all domains continuously (see the runner below).
+- **Private-domain monitoring** — optionally probes private hosts through AWS SSM
+  Run Command on an SSM-managed instance.
 - **Add / bulk-import / delete** domains, search + status filters, CSV/JSON export.
 - **Alerts** — per-threshold, de-duplicated, to the global recipient via SES/SNS.
 - **Downloadable PDF status report** (admin) + per-domain **test alert**.
@@ -113,7 +115,10 @@ systemd service (see DEPLOY.md).
 | `AWS_REGION` | `us-east-1` | region for SES/SNS |
 | `THRESHOLD_DAYS` | `30,14,7,1` | alert thresholds (days) |
 | `TLS_TIMEOUT_SECONDS` | `5` | per-host connect timeout |
-| `AGENT_STALE_AFTER_HOURS` | `6` | hours before a silent agent is alerted on |
+| `AGENT_STALE_AFTER_HOURS` | `6` | legacy setting; unused by direct SSM checks |
+| `AGENT_TRANSPORT` | `ssm` | direct SSM command execution from the central checker |
+| `SSM_DOCUMENT_NAME` | `AWS-RunShellScript` | SSM document used for private probes |
+| `SSM_POLL_INTERVAL_SECONDS` | `2` | seconds between SSM command status checks |
 
 > **Startup guard.** With `AUTH_ENABLED=true` the API **refuses to start** if
 > `AUTH_SECRET` is empty, is the built-in default, is shorter than 32 characters,
@@ -166,6 +171,15 @@ installs its own renewal timer. It needs the domain's DNS pointing at the box an
 ports 80 + 443 open. HSTS and the other security headers ship in
 `deploy/security-headers.conf` and activate automatically once TLS is on. See
 **[DEPLOY.md](DEPLOY.md)** for the full steps.
+
+### Private domains through AWS SSM
+
+Set `AGENT_TRANSPORT=ssm`. Each private-domain record must have its `agent_id`
+set to the target SSM managed-instance ID (`i-...` or `mi-...`). The server IAM role needs
+`ssm:SendCommand` and `ssm:GetCommandInvocation`; the managed instance needs
+SSM Agent, `AmazonSSMManagedInstanceCore`, and outbound access to Systems Manager.
+The checker runs the TLS probe inside that instance, using its private DNS and
+network routes. No CertWatch agent process or `/agent/report` endpoint is used.
 
 ---
 
@@ -226,7 +240,7 @@ DEPLOY.md        # single-server deployment guide
   `handlers/_deps.py` is the single seam that turns `Settings` into concrete
   implementations (SQLite, SES/SNS).
 - **Agents report facts, the server decides.** Domains inside a private network
-  are monitored by a remote agent that pushes only `reachable` + `notAfter`;
+  are monitored by an SSM-managed instance that returns only `reachable` + `notAfter`;
   `days_remaining`, status, and thresholds are computed server-side by the same
   core functions the direct checker uses, so the two can't disagree. Such rows
   are marked `source="agent"` and the checker **never probes them** — it can't

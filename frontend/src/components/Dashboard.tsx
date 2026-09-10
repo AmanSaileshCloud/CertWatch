@@ -123,10 +123,10 @@ export function Dashboard({ preference, onToggleTheme }: DashboardProps) {
     toast.show(`Removed ${keys.length} domain${keys.length !== 1 ? "s" : ""}`, "info");
   }
 
-  async function handleAdd(domain: string, port: number): Promise<boolean> {
+  async function handleAdd(domain: string, port: number, agentId?: string): Promise<boolean> {
     setBusy(true);
     try {
-      const created = await api.addDomain(domain, port);
+      const created = await api.addDomain(domain, port, agentId);
       await refresh();
       setHighlightKey(created.domain);
       window.setTimeout(() => setHighlightKey(null), 1400);

@@ -95,10 +95,10 @@ export const api = {
 
   listDomains: () => request<DomainRecord[]>("/domains"),
 
-  addDomain: (domain: string, port: number) =>
+  addDomain: (domain: string, port: number, agent_id?: string) =>
     request<DomainRecord>("/domains", {
       method: "POST",
-      body: JSON.stringify({ domain, port }),
+      body: JSON.stringify({ domain, port, ...(agent_id ? { agent_id } : {}) }),
     }),
 
   updateDomain: (

@@ -27,7 +27,7 @@ from ..auth.models import User
 from ..auth.security import create_access_token
 from ..auth.users import UserStore
 from ..config.settings import Settings
-from ..core.models import Alert, Status
+from ..core.models import Alert, SOURCE_AGENT, Status
 from ..services.checker import ProbeFn, refresh_status, run_check
 from ..services.digest import render_digest_pdf
 from ..services.domains import (
@@ -40,7 +40,6 @@ from ..services.domains import (
     update_domain,
 )
 from ..auth.rate_limit import LoginLimiter
-from .agent_routes import get_agent_router
 from .dependencies import (
     get_app_settings,
     get_cert_prober,
@@ -134,12 +133,6 @@ app.add_middleware(
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
-
-
-# Agent reporting endpoint — receives results from remote SSL agents.
-# Storage is resolved per-request via Depends, so no adapter is built at import
-# time and tests can override it like every other route.
-app.include_router(get_agent_router())
 
 
 @app.post("/auth/login", response_model=TokenOut)
@@ -257,10 +250,14 @@ def post_domain(
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except InvalidDomain as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    # Probe immediately so the new row shows real status without waiting for the
-    # periodic checker. Doesn't touch alert-dedup, so the first alert still fires.
-    refresh_status(record, now=now, thresholds=settings.threshold_days,
-                   timeout=settings.tls_timeout_seconds, probe_fn=probe)
+    if body.agent_id:
+        record.source = SOURCE_AGENT
+        record.agent_id = body.agent_id
+    else:
+        # Probe immediately so the new row shows real status without waiting for
+        # the periodic checker. Doesn't touch alert-dedup, so the first alert still fires.
+        refresh_status(record, now=now, thresholds=settings.threshold_days,
+                       timeout=settings.tls_timeout_seconds, probe_fn=probe)
     storage.put(record)
     return DomainOut.from_record(record)
 
@@ -306,8 +303,12 @@ def bulk_add_domains(
     for item in body.domains:
         try:
             record = add_domain(storage, item.domain, item.port, now)
-            refresh_status(record, now=now, thresholds=settings.threshold_days,
-                           timeout=settings.tls_timeout_seconds, probe_fn=probe)
+            if item.agent_id:
+                record.source = SOURCE_AGENT
+                record.agent_id = item.agent_id
+            else:
+                refresh_status(record, now=now, thresholds=settings.threshold_days,
+                               timeout=settings.tls_timeout_seconds, probe_fn=probe)
             storage.put(record)
             added.append(DomainOut.from_record(record))
         except (DomainExists, InvalidDomain) as exc:

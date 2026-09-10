@@ -24,6 +24,7 @@ from ..core.thresholds import decide_alert
 
 # (host, port, timeout) -> ProbeResult
 ProbeFn = Callable[[str, int, float], ProbeResult]
+AgentProbeFn = Callable[[DomainRecord, float], ProbeResult]
 
 # How long an agent-managed record may go without a fresh report before we treat
 # the agent as down. The agent's default interval is 5 minutes, so this is ~72
@@ -91,6 +92,35 @@ def check_one(
         decision = AlertDecision(
             should_alert=False, threshold=None, new_last_alert=record.last_alert_threshold
         )
+    return record, decision
+
+
+def check_agent_one(
+    record: DomainRecord,
+    *,
+    now: datetime,
+    thresholds: Sequence[int],
+    timeout: float,
+    probe_fn: AgentProbeFn,
+) -> tuple[DomainRecord, AlertDecision]:
+    """Probe an agent-managed domain through an agent-aware transport."""
+    result = probe_fn(record, timeout)
+    if result.reachable and result.not_after is not None:
+        record.days_remaining = days_remaining(result.not_after, now)
+        record.not_after = result.not_after
+        record.last_error = None
+    else:
+        record.not_after = None
+        record.days_remaining = None
+        record.last_error = result.error
+    record.status = classify_status(result.reachable, record.days_remaining, thresholds)
+    record.last_checked_at = now
+    if record.alerts_enabled:
+        decision = decide_alert(record.days_remaining, thresholds, record.last_alert_threshold)
+        record.last_alert_threshold = decision.new_last_alert
+    else:
+        decision = AlertDecision(False, None, record.last_alert_threshold)
+    record.stale_alert_sent = False
     return record, decision
 
 
@@ -181,6 +211,7 @@ def run_check(
     now: datetime,
     probe_fn: ProbeFn = probe_cert,
     agent_stale_after_hours: float = DEFAULT_AGENT_STALE_AFTER_HOURS,
+    agent_probe_fn: AgentProbeFn | None = None,
 ) -> dict:
     """Check every stored domain, persist results, fire de-duplicated alerts.
 
@@ -195,7 +226,15 @@ def run_check(
     for record in storage.list():
         stale_alert: Alert | None = None
 
-        if record.is_agent_managed:
+        if record.is_agent_managed and agent_probe_fn is not None:
+            updated, decision = check_agent_one(
+                record,
+                now=now,
+                thresholds=thresholds,
+                timeout=timeout,
+                probe_fn=agent_probe_fn,
+            )
+        elif record.is_agent_managed:
             updated, decision, stale_alert = evaluate_agent_record(
                 record, now=now, thresholds=thresholds, stale_after=stale_after
             )
