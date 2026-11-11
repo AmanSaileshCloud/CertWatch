@@ -32,7 +32,9 @@ from datetime import datetime, timezone
 import httpx
 
 from ..ssl_monitor.adapters.storage.base import UptimeRepoPort
+from ..ssl_monitor.adapters.storage.heartbeat_postgres import PostgresHeartbeats
 from ..ssl_monitor.config.settings import Settings
+from ..ssl_monitor.core.health import UPTIME_WORKER
 from ..ssl_monitor.core.http_probe import make_http_client, probe_http
 from ..ssl_monitor.core.uptime_models import CheckResult, Monitor
 from ..ssl_monitor.handlers._deps import (
@@ -40,6 +42,7 @@ from ..ssl_monitor.handlers._deps import (
     make_alert_config,
     make_catalog_repo,
     make_email_notifier,
+    make_engine,
     make_uptime_repo,
 )
 from ..ssl_monitor.services.uptime_alerts import (
@@ -56,6 +59,8 @@ ADHOC_INTERVAL_SECONDS = 60
 
 # Sends every uptime alert due at the given time (dispatch_alerts with its stores bound).
 AlertDispatch = Callable[..., AlertSummary]
+# Records "the worker finished a cycle at this time" (read by /health/ready).
+Heartbeat = Callable[[datetime], None]
 
 
 def _make_probe(client: httpx.AsyncClient, settings: Settings) -> UptimeProbeFn:
@@ -186,8 +191,9 @@ def _install_sigterm(stop: asyncio.Event) -> None:
         asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, stop.set)
 
 
-async def _run_until_stopped(cycle: Awaitable[CycleSummary], stop: asyncio.Event) -> None:
-    """Run one cycle, cancelling it if a stop is requested meanwhile."""
+async def _run_until_stopped(cycle: Awaitable[CycleSummary], stop: asyncio.Event) -> bool:
+    """Run one cycle, cancelling it if a stop is requested meanwhile.
+    True when the cycle finished without an error."""
     task = asyncio.ensure_future(cycle)
     stopper = asyncio.ensure_future(stop.wait())
     await asyncio.wait({task, stopper}, return_when=asyncio.FIRST_COMPLETED)
@@ -196,11 +202,21 @@ async def _run_until_stopped(cycle: Awaitable[CycleSummary], stop: asyncio.Event
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
-        return
+        return False
     try:
         task.result()
     except Exception:
         logger.exception("Uptime cycle failed (is the database up?)")
+        return False
+    return True
+
+
+def beat_safely(heartbeat: Heartbeat) -> None:
+    """Record a heartbeat; a failure is logged, never fatal to the worker."""
+    try:
+        heartbeat(_now())
+    except Exception:
+        logger.exception("Could not record the uptime worker heartbeat")
 
 
 async def _sleep_until_next_tick(stop: asyncio.Event, seconds: float) -> None:
@@ -226,10 +242,13 @@ async def run_forever(
     repo: UptimeRepoPort,
     stop: asyncio.Event | None = None,
     dispatch: AlertDispatch | None = None,
+    heartbeat: Heartbeat | None = None,
 ) -> None:
     """Run a cycle every tick until stopped, sending due alerts (when ``dispatch`` is
     given) alongside the next cycles. A failing cycle or dispatch is logged, not
-    fatal. On stop, an alert dispatch already sending is allowed to finish."""
+    fatal. After each successful cycle ``heartbeat`` (if given) is recorded, so a
+    stopped or failing worker shows up on /health/ready. On stop, an alert
+    dispatch already sending is allowed to finish."""
     stop = stop or asyncio.Event()
     _install_sigterm(stop)
     tick = settings.uptime_tick_seconds
@@ -240,7 +259,9 @@ async def run_forever(
         probe = _make_probe(client, settings)
         while not stop.is_set():
             started = time.monotonic()
-            await _run_until_stopped(_cycle(settings, repo, probe), stop)
+            finished = await _run_until_stopped(_cycle(settings, repo, probe), stop)
+            if finished and heartbeat is not None:
+                await asyncio.to_thread(beat_safely, heartbeat)
             if dispatch is not None and not stop.is_set():
                 alerts = _start_dispatch(alerts, dispatch)
             await _sleep_until_next_tick(stop, tick - (time.monotonic() - started))
@@ -248,6 +269,14 @@ async def run_forever(
         logger.info("Waiting for the alert dispatch in progress to finish...")
         await alerts
     logger.info("Uptime worker stopped.")
+
+
+def make_heartbeat(settings: Settings) -> Heartbeat | None:
+    """The uptime worker's heartbeat writer (PostgreSQL only; None for memory storage)."""
+    if settings.storage != "postgres":
+        return None
+    beats = PostgresHeartbeats(make_engine(settings))
+    return lambda at: beats.beat(UPTIME_WORKER, at)
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -289,7 +318,8 @@ def main(argv: list[str] | None = None) -> int:
             summary = asyncio.run(run_once(settings, repo))
             _print_summary(summary, dispatch_safely(dispatch))
         else:
-            asyncio.run(run_forever(settings, repo, dispatch=dispatch))
+            asyncio.run(run_forever(settings, repo, dispatch=dispatch,
+                                    heartbeat=make_heartbeat(settings)))
     except KeyboardInterrupt:
         logger.info("Stopped.")
     except Exception as exc:

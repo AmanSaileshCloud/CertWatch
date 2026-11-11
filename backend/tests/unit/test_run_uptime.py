@@ -97,6 +97,54 @@ def test_loop_survives_a_failing_cycle_and_stops_on_request(monkeypatch):
     assert len(calls) == 2
 
 
+def test_heartbeat_is_recorded_only_after_a_successful_cycle(monkeypatch):
+    calls, beats = [], []
+
+    async def scenario():
+        stop = asyncio.Event()
+
+        async def cycle(settings, repo, probe):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("database down")
+            if len(calls) == 3:
+                stop.set()
+
+        _patch_cycle(monkeypatch, cycle)
+        await asyncio.wait_for(run_uptime.run_forever(
+            _loop_settings(), MemoryUptimeRepo(), stop, heartbeat=beats.append), timeout=5)
+
+    asyncio.run(scenario())
+    assert len(calls) == 3
+    assert len(beats) == 2  # cycles 2 and 3; the failed first cycle sends no heartbeat
+
+
+def test_a_failing_heartbeat_never_stops_the_worker(monkeypatch):
+    calls = []
+
+    def broken_heartbeat(at):
+        raise ConnectionError("database down")
+
+    async def scenario():
+        stop = asyncio.Event()
+
+        async def cycle(settings, repo, probe):
+            calls.append(1)
+            if len(calls) == 2:
+                stop.set()
+
+        _patch_cycle(monkeypatch, cycle)
+        await asyncio.wait_for(run_uptime.run_forever(
+            _loop_settings(), MemoryUptimeRepo(), stop, heartbeat=broken_heartbeat), timeout=5)
+
+    asyncio.run(scenario())
+    assert len(calls) == 2
+
+
+def test_heartbeat_only_with_postgres_storage():
+    assert run_uptime.make_heartbeat(_loop_settings()) is None
+
+
 def test_stop_cancels_a_cycle_that_is_still_running(monkeypatch):
     cancelled = []
 

@@ -1,0 +1,7 @@
+# Deploy files run on Linux: keep LF line endings even in a Windows checkout,
+# so a copied script never fails with "$'\r': command not found".
+*.sh       text eol=lf
+*.service  text eol=lf
+*.timer    text eol=lf
+deploy/*.conf text eol=lf
+deploy/certwatch.env.example text eol=lf

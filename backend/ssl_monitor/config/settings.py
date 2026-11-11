@@ -145,6 +145,8 @@ class Settings:
     # Uptime alerts (SES email only). Per-monitor values override these defaults.
     uptime_reminder_minutes: int = 30  # repeat "still down" every N min; 0 = never
     uptime_alert_delay_minutes: int = 0  # only alert once down for at least N min
+    # Raw check results older than this are deleted by the hourly rollup job.
+    uptime_raw_retention_days: int = 30
     public_url: str | None = None  # dashboard URL used for links in alert emails
     # Fernet key that encrypts secrets saved from the UI (SES SMTP password).
     # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
@@ -241,6 +243,7 @@ class Settings:
                 e, "UPTIME_REMINDER_MINUTES", "30", ALLOWED_REMINDER_MINUTES),
             uptime_alert_delay_minutes=_one_of(
                 e, "UPTIME_ALERT_DELAY_MINUTES", "0", ALLOWED_ALERT_DELAY_MINUTES),
+            uptime_raw_retention_days=_positive(int, e, "UPTIME_RAW_RETENTION_DAYS", "30"),
             public_url=(e.get("CERTWATCH_PUBLIC_URL", "").strip().rstrip("/") or None),
             settings_encryption_key=(e.get("SETTINGS_ENCRYPTION_KEY", "").strip() or None),
             uptime_allow_private_targets=(

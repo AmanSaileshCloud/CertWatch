@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the CERTWatch uptime rollup every hour
+
+[Timer]
+# A few minutes past each hour, so the hour that just ended is complete.
+OnCalendar=*-*-* *:05:00
+# If the server was off at that moment, run once as soon as it is back.
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

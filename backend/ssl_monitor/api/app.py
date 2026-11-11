@@ -22,13 +22,16 @@ from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from ..adapters.notifier.base import NotifierPort
 from ..adapters.storage.base import StoragePort
+from ..adapters.storage.heartbeat_postgres import PostgresHeartbeats
 from ..auth.models import User
 from ..auth.security import create_access_token
 from ..auth.users import UserStore
 from ..config.settings import Settings
+from ..core.health import UPTIME_WORKER, heartbeat_problem
 from ..core.models import Alert, SOURCE_AGENT, Status
 from ..services.checker import ProbeFn, refresh_status, run_check
 from ..services.catalog import Stores, set_domain_group
@@ -55,6 +58,7 @@ from .routers import (
 from .dependencies import (
     get_app_settings,
     get_cert_prober,
+    get_heartbeats,
     get_current_user,
     get_login_limiter,
     get_notifier,
@@ -149,7 +153,28 @@ for _router in (customers.router, groups.router, monitors.router, alerts.router,
 
 @app.get("/health")
 def health() -> dict:
+    """Liveness: the API process is answering."""
     return {"status": "ok"}
+
+
+@app.get("/health/ready")
+def health_ready(heartbeats: PostgresHeartbeats | None = Depends(get_heartbeats)) -> JSONResponse:
+    """Readiness, for the external alarm: the database answers and the uptime
+    worker finished a cycle recently. 503 (with the reason) otherwise."""
+    if heartbeats is None:
+        return JSONResponse({"status": "ok", "database": "not used"})
+    try:
+        heartbeats.ping()
+        last_beat = heartbeats.last_beat(UPTIME_WORKER)
+    except Exception:
+        logger.exception("Readiness check: database unreachable")
+        return JSONResponse({"status": "error", "problem": "the database is unreachable"},
+                            status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+    problem = heartbeat_problem(last_beat, datetime.now(timezone.utc))
+    if problem:
+        return JSONResponse({"status": "error", "problem": problem},
+                            status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+    return JSONResponse({"status": "ok", "uptime_worker_last_beat": last_beat.isoformat()})
 
 
 @app.post("/auth/login", response_model=TokenOut)

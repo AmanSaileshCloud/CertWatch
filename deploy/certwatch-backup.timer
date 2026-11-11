@@ -1,0 +1,11 @@
+[Unit]
+Description=Back up the CERTWatch database every night
+
+[Timer]
+# 02:30 server time (UTC on EC2 = 08:00 IST), a quiet time for the database.
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

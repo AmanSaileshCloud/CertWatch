@@ -1,225 +1,280 @@
-# CERTWatch — Single-Server Deployment (EC2 t2.micro)
+# CERTWatch: production deployment (single EC2 server)
 
-This deploys the whole app — API, checker, and frontend — onto **one EC2
-instance**. No Lambda, API Gateway, DynamoDB, CloudFront, or S3.
+This guide puts the whole app on **one EC2 instance**: the API, the SSL checker, the website uptime worker, PostgreSQL, the frontend and Nginx. The steps are scripted (`deploy/setup.sh`, `deploy/update.sh`), and this guide covers the AWS pieces around them.
 
 ```
-                        ┌──────────────────── EC2 t2.micro ───────────────────┐
-   Browser  ──HTTP:80─► │  Nginx ──/assets, SPA──►  frontend/dist (static)     │
-                        │    └──/auth /domains /checks /admin /health──┐       │
-                        │                                              ▼       │
-                        │                       uvicorn :8000  (systemd svc)   │
-                        │                              │                       │
-                        │                              ▼                       │
-                        │                    SQLite  /opt/certwatch/data       │
-                        │  checker-loop (24x7) ─► run_checker ──► SES/SNS       │
-                        └──────────────────────────────────────────────────────┘
+                          ┌───────────────────── EC2 t3.medium (ap-south-1) ─────────────────────┐
+  Browser ──HTTPS:443──►  │ Nginx ── /assets, SPA ──► frontend/dist (static)                     │
+                          │   └── /auth /admin /domains /checks /health /customers /groups       │
+                          │       /monitors /alerts /alert-rules /settings ──► uvicorn :8000     │
+                          │                                                     │                │
+                          │ certwatch-api            (FastAPI, 2 workers) ──────┤                │
+                          │ certwatch-checker-loop   (SSL certificates, 24x7) ──┤                │
+                          │ certwatch-uptime         (websites, 24x7) ──────────┼──► PostgreSQL  │
+                          │ certwatch-rollup.timer   (hourly summaries, 30-day cleanup)          │
+                          │ certwatch-backup.timer   (nightly pg_dump ──► S3)                    │
+                          └──────────────────────────────────────────────────────────────────────┘
+  Route 53 health check ──► https://<domain>/health/ready ──► CloudWatch alarm ──► SNS ──► ops email/SMS
+  Alerts to customers/engineers: Amazon SES (IAM role or SMTP), SSL alerts also via SNS
 ```
 
 | Piece | How it runs |
-|-------|-------------|
-| API | `uvicorn` under **systemd** (`certwatch-api.service`), bound to `127.0.0.1:8000` |
-| Checker | **`certwatch-checker-loop.service`** — 24×7 `run_checker --interval 300`, auto-restarts (periodic `.timer` is the alternative) |
-| Storage | **SQLite** file at `/opt/certwatch/data/certwatch.db` |
-| Alerts | **AWS SNS + SES** via the EC2 IAM role (per manager) |
-| Login / users | **Username/password JWT** — self-contained, `auth_users.json` on the box |
-| Report | On-demand **PDF download** from the dashboard (no email needed) |
-| Frontend | Static build served by **Nginx**; same-origin, no CORS |
+|---|---|
+| API | `uvicorn` under systemd (`certwatch-api`), on `127.0.0.1:8000` behind Nginx |
+| SSL checker | `certwatch-checker-loop`: checks every stored domain every 300 s |
+| Website checker | `certwatch-uptime`: checks each monitor at its own 1, 5 or 10-minute interval, sends DOWN/RECOVERED emails, and records a heartbeat |
+| Database | PostgreSQL on the same server (or Amazon RDS), schema managed by Alembic migrations |
+| Hourly job | `certwatch-rollup.timer`: summarises each finished hour and deletes raw results older than `UPTIME_RAW_RETENTION_DAYS` (30) |
+| Backups | `certwatch-backup.timer`: nightly `pg_dump` (keeps 7 locally, copies to S3) |
+| Users | Username/password JWT; accounts in `/opt/certwatch/data/auth_users.json` |
 
 ---
 
-## 1. Launch the instance
+## 1. AWS prerequisites
 
-- **AMI:** Ubuntu Server 22.04 or 24.04 LTS
-- **Type:** t2.micro
-- **Storage:** 8–16 GB gp3
-- **Security group:**
-  - TCP **22** (SSH) — from **your IP only**
-  - TCP **80** (HTTP) — from anywhere (or your office range)
-  - Leave **8000 closed** — uvicorn is internal, reached only via Nginx
+**Instance:**
+- Ubuntu Server **24.04 LTS** (22.04 also works)
+- **t3.medium** (4 GB RAM); t3.small (2 GB) is the bare minimum
+- region **ap-south-1**
+- **30 GB gp3** disk
 
-## 2. Attach an IAM role (for SES/SNS alerts)
+The old t2.micro (1 GB) can't run PostgreSQL and the workers together.
 
-Create an IAM role for EC2 and attach it to the instance. Minimum policy:
+**Elastic IP:** attach one, so the address (and the DNS record and HTTPS) survives a stop and start.
 
+**Security group:**
+- **443** and **80** from anywhere. Port 80 is only for the certificate check and the redirect to HTTPS.
+- **22** closed. Use **SSM Session Manager** to get a shell, or allow 22 from your office IP only.
+- **8000 and 5432 stay closed.** The API and the database are only reachable from inside the server.
+
+**IAM role** attached to the instance:
+- Managed policy **`AmazonSSMManagedInstanceCore`** (shell access through Session Manager, and the private-domain SSL checks)
+- This inline policy:
 ```json
 {
   "Version": "2012-10-17",
   "Statement": [
+    { "Effect": "Allow", "Action": ["ses:SendEmail", "ses:SendRawEmail"], "Resource": "*" },
     { "Effect": "Allow", "Action": "sns:Publish",
-      "Resource": "arn:aws:sns:us-east-1:ACCOUNT_ID:ssl-alerts" },
-    { "Effect": "Allow", "Action": ["ses:SendEmail", "ses:SendRawEmail"],
-      "Resource": "*" }
+      "Resource": "arn:aws:sns:ap-south-1:ACCOUNT_ID:ssl-alerts" },
+    { "Effect": "Allow", "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::YOUR-BACKUP-BUCKET/certwatch/*" },
+    { "Effect": "Allow", "Action": ["ssm:SendCommand", "ssm:GetCommandInvocation"], "Resource": "*" }
   ]
 }
 ```
+With the role attached, **no AWS keys go anywhere on the server**.
 
-With the role attached, **no AWS keys go in the env file** — boto3 reads
-temporary credentials from instance metadata automatically.
+**Backup bucket:** create a private S3 bucket with:
+- default encryption on
+- *Block all public access* on
+- a lifecycle rule that expires `certwatch/` objects after **30 days**
 
-## 3. Create the SNS topic + verify SES sender (once)
+**DNS:** an A record such as `certwatch.yourcompany.com` pointing to the Elastic IP.
 
-From your laptop or the instance (with the role/keys and the repo installed):
+**Email (SES) for ap-south-1:**
+1. Verify your sending domain, and add the **DKIM** CNAME records SES gives you.
+2. Add an **SPF** record (`v=spf1 include:amazonses.com ~all`) and a **DMARC** record (`v=DMARC1; p=none; rua=mailto:you@yourcompany.com`).
+3. Request **production access** to leave the SES sandbox. In the sandbox, SES only delivers to verified addresses.
 
+Without these, DOWN alerts can land in spam.
+
+For SSL alerts over SNS (optional), run once:
 ```bash
-SNS_TOPIC_ARN=arn:aws:sns:us-east-1:ACCOUNT_ID:ssl-alerts \
-ALERT_EMAIL=alerts@yourcompany.com \
-AWS_REGION=us-east-1 \
-python -m backend.scripts.bootstrap
+SNS_TOPIC_ARN=arn:aws:sns:ap-south-1:ACCOUNT_ID:ssl-alerts ALERT_EMAIL=alerts@yourcompany.com \
+AWS_REGION=ap-south-1 python -m backend.scripts.bootstrap
 ```
 
-This creates the `ssl-alerts` topic and requests SES verification for the
-sender. **Confirm the SNS email subscription** and **click the SES verification
-link** that AWS emails you. To alert arbitrary recipients (not just verified
-ones), request SES production access to leave the sandbox.
+## 2. Install
 
-## 4. Provision the server
-
+On the instance:
 ```bash
-# on the instance
 sudo apt-get update -y && sudo apt-get install -y git
-sudo git clone <YOUR_REPO_URL> /tmp/certwatch-src
+sudo git clone --branch v1.0.0 <YOUR_REPO_URL> /tmp/certwatch-src    # deploy a tagged release
 cd /tmp/certwatch-src
-sudo bash deploy/setup.sh
+sudo CERTWATCH_DOMAIN=certwatch.yourcompany.com CERTBOT_EMAIL=ops@yourcompany.com \
+     bash deploy/setup.sh
 ```
 
-`setup.sh` is idempotent and does everything: 2 GB swap, `certwatch` system
-user, Python venv + deps, frontend build, systemd units + timer, and Nginx.
+`setup.sh` is safe to re-run. It does all of this:
+- installs PostgreSQL, Python, Node and Nginx;
+- adds 2 GB of swap and caps system logs at 1 GB;
+- creates the `certwatch` system user;
+- creates the database with a **generated password**;
+- **generates every secret** (`AUTH_SECRET`, `SETTINGS_ENCRYPTION_KEY`, the database password, the first admin password);
+- builds the frontend;
+- applies the database migrations;
+- installs and starts every service and timer;
+- obtains the **HTTPS certificate** (with an automatic redirect from HTTP).
 
-## 5. Fill in the remaining settings and restart
+**Copy the admin password it prints at the end; it is shown only once.**
 
-`setup.sh` already generated a real `AUTH_SECRET` and a random first-admin
-password, and printed that password once at the end of its run. Grab it from the
-output before you close the terminal. What's left is the alerting config:
+Without `CERTWATCH_DOMAIN`, the site is left on plain HTTP and the script warns you loudly. Don't let anyone log in until HTTPS is on, because passwords and tokens would cross the network unencrypted.
 
+**Amazon RDS instead of a local database:**
+1. Before running `setup.sh`, create `/etc/certwatch/certwatch.env` from `deploy/certwatch.env.example` (mode 640, group `certwatch`).
+2. Set `DATABASE_URL` to the RDS endpoint in it.
+3. Fill in `AUTH_SECRET`, `AUTH_BOOTSTRAP_PASSWORD` and `SETTINGS_ENCRYPTION_KEY` yourself (see the comments in the file).
+
+`setup.sh` then skips the local PostgreSQL install.
+Use RDS **PostgreSQL 16**, the same major version as Ubuntu 24.04's `pg_dump`. A newer server version would make the nightly backup fail unless you install the matching client.
+
+## 3. Finish the configuration
 ```bash
-sudo nano /etc/certwatch/certwatch.env      # set SNS_TOPIC_ARN and ALERT_EMAIL
-sudo systemctl restart certwatch-api
+sudo nano /etc/certwatch/certwatch.env
+#   ALERT_EMAIL=alerts@yourcompany.com          (SES sender, must be verified)
+#   SNS_TOPIC_ARN=arn:aws:sns:ap-south-1:...    (optional, SSL alerts)
+#   BACKUP_S3_BUCKET=your-backup-bucket
+sudo systemctl restart certwatch-api certwatch-uptime certwatch-checker-loop
 ```
+The alert recipients, reminder timing and SES SMTP credentials can also be managed later on the **Settings** page (admins only).
 
-To rotate the signing key later, replace `AUTH_SECRET` with a fresh
-`openssl rand -hex 32` and restart — every existing session is invalidated.
-
-> **The API refuses to start** with `AUTH_ENABLED=true` if `AUTH_SECRET` is
-> empty, is the built-in default, is under 32 characters, or still contains
-> placeholder text such as `CHANGE_ME` — and likewise for a placeholder
-> `AUTH_BOOTSTRAP_PASSWORD`. A copied-but-unedited env file fails loudly instead
-> of signing tokens with a key that is published in this repo.
->
-> If the API won't start, that's the first thing to check:
-> `journalctl -u certwatch-api -n 30`
-
-## 6. Verify
-
+## 4. Verify
 ```bash
-curl -s http://localhost/health              # {"status":"ok"}
-systemctl status certwatch-api               # active (running)
-systemctl status certwatch-checker-loop      # active (running) — the 24x7 checker
+curl -s https://certwatch.yourcompany.com/health/ready
+# {"status":"ok","uptime_worker_last_beat":"..."}
+systemctl status certwatch-api certwatch-uptime certwatch-checker-loop
+systemctl list-timers 'certwatch-*' 'certbot*'
 ```
-
-Open `http://<instance-public-ip>/` in a browser — the CERTWatch login appears.
-Log in as **admin** with the password `setup.sh` printed at the end of its run;
-the admin sees the Digest button and other admin controls. Change that password
-from the Users panel once you're in.
+Then log in as **admin**, change the password (Users panel), and follow the **go-live checklist** at the end of this file.
 
 ---
 
-## 7. Enable HTTPS — do this before anyone else logs in
+## 5. Monitoring the monitor (do not skip)
 
-`setup.sh` leaves the site on plain HTTP so the first boot works without a
-domain. **That state is not safe to keep.** Login passwords and bearer tokens
-travel in cleartext and are readable by anything on the network path.
+If the server, the database or the uptime worker stops, CertWatch can't alert anyone about it. Two alarms close that gap.
 
-1. Point an A record at the instance's public IP (or an Elastic IP).
-2. Open TCP **443** in the security group (leave **80** open — certbot's
-   HTTP-01 challenge and the redirect both need it).
-3. Bind the Nginx site to your domain. The stock config answers on
-   `server_name _`, and certbot needs a real name to match:
-   ```bash
-   sudo sed -i 's/server_name _;/server_name certwatch.yourcompany.com;/' \
-     /etc/nginx/sites-available/certwatch
-   sudo nginx -t && sudo systemctl reload nginx
-   ```
-4. Obtain the certificate:
-   ```bash
-   sudo apt-get install -y certbot python3-certbot-nginx
-   sudo certbot --nginx -d certwatch.yourcompany.com --redirect \
-     --agree-tos -m ops@yourcompany.com
-   ```
+`/health/ready` answers **200** only when the database responds *and* the uptime worker finished a check cycle in the last 3 minutes. Otherwise it answers **503** and gives the reason.
 
-Certbot edits the Nginx site, adds a permanent HTTP→HTTPS redirect, and installs
-a systemd renewal timer — fitting, since this app monitors exactly that expiry.
-Confirm renewal is scheduled with `systemctl list-timers 'certbot*'`.
+**a) Route 53 health check, then an alarm email.** Run these from a machine with AWS admin access. Route 53 metrics live in **us-east-1**, so the SNS topic for the alarm must be there too.
+```bash
+aws sns create-topic --region us-east-1 --name certwatch-ops-alarms
+aws sns subscribe --region us-east-1 --topic-arn arn:aws:sns:us-east-1:ACCOUNT_ID:certwatch-ops-alarms \
+    --protocol email --notification-endpoint ops@yourcompany.com     # click the confirmation link
 
-HSTS, CSP, `X-Content-Type-Options`, `X-Frame-Options`, and `Referrer-Policy`
-come from `deploy/security-headers.conf`, installed to
-`/etc/nginx/snippets/certwatch-security-headers.conf`. HSTS is inert over plain
-HTTP and starts applying the moment TLS is on, so there is nothing to edit.
+aws route53 create-health-check --caller-reference certwatch-$(date +%s) --health-check-config \
+    Type=HTTPS,FullyQualifiedDomainName=certwatch.yourcompany.com,ResourcePath=/health/ready,RequestInterval=30,FailureThreshold=3
+# note the returned HealthCheck Id
 
-Re-running `setup.sh` afterwards will **not** clobber the TLS config — it
-detects `ssl_certificate` in the installed site and leaves it alone.
+aws cloudwatch put-metric-alarm --region us-east-1 --alarm-name certwatch-not-ready \
+    --namespace AWS/Route53 --metric-name HealthCheckStatus \
+    --dimensions Name=HealthCheckId,Value=<HEALTH_CHECK_ID> \
+    --statistic Minimum --period 60 --evaluation-periods 3 --threshold 1 \
+    --comparison-operator LessThanThreshold --treat-missing-data breaching \
+    --alarm-actions arn:aws:sns:us-east-1:ACCOUNT_ID:certwatch-ops-alarms \
+    --ok-actions arn:aws:sns:us-east-1:ACCOUNT_ID:certwatch-ops-alarms
+```
+You also get an "OK" email when it recovers. Add an SMS subscription to the topic if you want a text message.
+
+**b) EC2 auto-recovery** for hardware faults:
+```bash
+aws cloudwatch put-metric-alarm --region ap-south-1 --alarm-name certwatch-ec2-recover \
+    --namespace AWS/EC2 --metric-name StatusCheckFailed_System \
+    --dimensions Name=InstanceId,Value=<INSTANCE_ID> \
+    --statistic Maximum --period 60 --evaluation-periods 2 --threshold 1 \
+    --comparison-operator GreaterThanOrEqualToThreshold \
+    --alarm-actions arn:aws:automate:ap-south-1:ec2:recover
+```
+
+**Test it before go-live:** run `sudo systemctl stop certwatch-uptime`. The alarm email should arrive within about 5 minutes. Then run `sudo systemctl start certwatch-uptime`, and the OK email follows.
+
+## 6. Backups and restore
+
+**Nightly:** `certwatch-backup.timer` runs at 02:30 UTC (08:00 IST). It writes `/opt/certwatch/backups/nightly-*.dump` (keeps the newest `BACKUP_KEEP_LOCAL`, default 7) and copies each dump to `s3://$BACKUP_S3_BUCKET/certwatch/<host>/`.
+
+**Before every update:** `update.sh` writes `pre-update-*.dump` before it changes anything. Delete old ones now and then.
+
+**Also back up `/opt/certwatch/data/auth_users.json`** (user accounts) **and `/etc/certwatch/certwatch.env`** (secrets) somewhere safe, such as a password manager. Without `SETTINGS_ENCRYPTION_KEY`, a saved SMTP password must be re-entered. Turning on an **EBS snapshot policy** (Data Lifecycle Manager, daily, keep 7) covers the whole disk as a second safety net.
+
+Run a backup now:
+```bash
+sudo systemctl start certwatch-backup && journalctl -u certwatch-backup -n 20
+```
+
+**Restore drill** (do it once before go-live; it doesn't touch the live database):
+```bash
+sudo -u postgres createdb -O certwatch certwatch_restore_test
+sudo -u certwatch pg_restore --no-owner \
+     -d "postgresql://certwatch:<DB_PASSWORD>@localhost:5432/certwatch_restore_test" \
+     /opt/certwatch/backups/<latest>.dump
+sudo -u postgres psql certwatch_restore_test -c "SELECT count(*) FROM monitors; SELECT count(*) FROM domains;"
+sudo -u postgres dropdb certwatch_restore_test
+```
+
+**Real restore** (replaces the live data):
+```bash
+sudo systemctl stop certwatch-uptime certwatch-checker-loop certwatch-api
+source <(sudo grep ^DATABASE_URL= /etc/certwatch/certwatch.env)
+sudo -u certwatch pg_restore --clean --if-exists --no-owner -d "$DATABASE_URL" <file.dump>
+sudo systemctl start certwatch-api certwatch-uptime certwatch-checker-loop
+```
+To restore from S3, first run `aws s3 cp s3://<bucket>/certwatch/<host>/<file>.dump .`.
+
+## 7. Updating
+
+```bash
+cd /tmp/certwatch-src && sudo git fetch --tags && sudo git checkout v1.0.1
+sudo bash deploy/update.sh
+curl -s https://certwatch.yourcompany.com/health/ready
+```
+`update.sh` runs these steps in order:
+1. backs up the database;
+2. syncs the code;
+3. installs dependencies;
+4. rebuilds the frontend;
+5. **applies migrations**;
+6. refreshes every systemd unit and the Nginx API routes (keeping the HTTPS config);
+7. restarts the API, both checkers and the uptime worker.
+
+If any step fails, it stops before the restart, and the running services keep the old code.
+
+**Roll back:** check out the previous tag, restore the `pre-update-*.dump` (see §6), and run `update.sh` again.
+
+**Upgrading an older SQLite or PM2 install:** run `sudo bash deploy/setup.sh` once instead of `update.sh`. It does this:
+- adds PostgreSQL and `DATABASE_URL` to the existing env file;
+- applies the migrations;
+- **copies your SSL domains from the old SQLite file** (only once; a marker file prevents repeats);
+- installs the systemd units.
+
+Afterwards, stop the PM2 processes (`pm2 delete certwatch-api certwatch-checker`) so they don't run twice. `deploy/update-pm2.sh` remains for PM2 setups, but PM2 has no uptime worker unless you add one, so **systemd is the supported way**.
+
+## 8. Day-2 operations
+```bash
+journalctl -u certwatch-api -f              # API
+journalctl -u certwatch-uptime -f           # website checks + alert emails
+journalctl -u certwatch-checker-loop -f     # SSL certificate checks
+journalctl -u certwatch-rollup -n 20        # last hourly rollup
+journalctl -u certwatch-backup -n 20        # last backup
+sudo -u postgres psql certwatch             # database shell
+```
+- **Rotate `AUTH_SECRET`:** put a new `openssl rand -hex 32` in the env file and restart `certwatch-api`. Everyone must log in again.
+- **The API refuses to start** if `AUTH_SECRET` is empty, too short or still a `CHANGE_ME` placeholder. Check `journalctl -u certwatch-api -n 30`.
+- **SSL check interval:** run `sudo systemctl edit --full certwatch-checker-loop`, change `--interval 300`, then restart.
+- **Disk space:** raw check results are kept for `UPTIME_RAW_RETENTION_DAYS` (30). Older history lives on in the hourly summary table.
+
+## 9. Known limits (fine for launch; on the roadmap)
+- Every logged-in user can see every customer, so **don't give customers logins yet**. Per-customer access arrives with the move of users into PostgreSQL.
+- Checks run from one location (this server). A network problem near the server can look like a site outage. The "3 failures in a row" rule filters short blips.
+- The login attempt limit and the test-alert cooldown are counted per API process (there are 2), so the effective limits are twice the configured values.
+
+## 10. Go-live checklist
+- [ ] t3.medium, Elastic IP, IAM role (§1), security group with 22, 8000 and 5432 closed
+- [ ] `setup.sh` run with `CERTWATCH_DOMAIN`; `https://` works and `http://` redirects
+- [ ] `ALERT_EMAIL`, `BACKUP_S3_BUCKET` set; SES domain verified with DKIM/SPF/DMARC; SES production access granted
+- [ ] Admin password changed; other users created with the `user` role
+- [ ] Test email from **Settings** arrives in the inbox (not spam)
+- [ ] A test monitor for a URL that returns 503 gives a DOWN email after 3 checks, and a RECOVERED email once fixed
+- [ ] `/health/ready` alarm tested by stopping `certwatch-uptime` (§5); EC2 recovery alarm created
+- [ ] Backup ran, landed in S3, and the restore drill passed (§6)
+- [ ] `auth_users.json` and `certwatch.env` backed up somewhere safe
+- [ ] 2-week side-by-side run with Site24x7 started (same URLs in both; compare detected outages)
 
 ---
 
-## Day-2 operations
+### Amazon Linux 2023 instead of Ubuntu?
+`setup.sh` uses `apt`. On AL2023 the equivalents are:
+- `dnf install -y python3 python3-pip nginx git rsync postgresql16-server`
+- `postgresql-setup --initdb`
+- Node via `dnf install -y nodejs20`
 
-**Logs**
-```bash
-journalctl -u certwatch-api -f                 # API
-journalctl -u certwatch-checker-loop -f        # live 24x7 checker passes
-```
-
-**Change how often it checks** — edit the interval (seconds) and restart:
-```bash
-sudo systemctl edit --full certwatch-checker-loop   # change --interval 300
-sudo systemctl restart certwatch-checker-loop
-```
-
-**Prefer periodic instead of 24x7?** Swap to the timer:
-```bash
-sudo systemctl disable --now certwatch-checker-loop
-sudo systemctl enable --now certwatch-checker.timer
-```
-
-**Deploy a code update**
-```bash
-cd /path/to/updated/checkout && git pull
-sudo bash deploy/update.sh                # systemd: sync, rebuild, restart
-```
-If you run under **PM2** instead of systemd, use the PM2 variant (it restarts
-the PM2 processes, not the systemd units):
-```bash
-sudo bash deploy/update-pm2.sh            # backend-only (fast)
-sudo bash deploy/update-pm2.sh --frontend # also rebuild the React UI
-```
-
-**Back up the data** (everything lives in one directory)
-```bash
-sudo cp -r /opt/certwatch/data ~/certwatch-backup-$(date +%F)
-```
-`certwatch.db` is the whole database; `auth_users.json` holds the user accounts.
-
----
-
-## Amazon Linux 2023 instead of Ubuntu?
-
-`setup.sh` uses `apt`. On AL2023 the equivalents are: `dnf install -y python3
-python3-pip nginx git rsync`, Node via `dnf install -y nodejs20`, and Nginx
-uses `/etc/nginx/conf.d/certwatch.conf` (no `sites-enabled`). The systemd units,
-env file, and app code are identical.
-
----
-
-## What changed from the serverless design
-
-| Serverless (retired) | Single server |
-|----------------------|---------------|
-| Lambda + Mangum + API Gateway | uvicorn + systemd + Nginx |
-| EventBridge schedule | systemd service (24×7 loop) or timer |
-| DynamoDB | SQLite (`adapters/storage/sqlite.py`) |
-| S3 + CloudFront | Nginx static files |
-| SNS + SES | **unchanged** — still used for alerts |
-| Auth | **unchanged** — username/password JWT, `auth_users.json` on the box |
-
-The serverless artifacts (`template.yaml`, `samconfig.toml`, `Makefile`, the
-Mangum/Lambda handlers) have been removed — this is now a single-server codebase.
+Nginx uses `/etc/nginx/conf.d/certwatch.conf` (no `sites-enabled`). The systemd units, env file and app code are identical.

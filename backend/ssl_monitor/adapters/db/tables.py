@@ -228,6 +228,15 @@ app_settings = Table(
     Column("updated_by", Text),
 )
 
+# One row per background worker: when it last finished a cycle successfully.
+# /health/ready reports a stale heartbeat, so a dead worker raises an alarm.
+worker_heartbeats = Table(
+    "worker_heartbeats",
+    metadata,
+    Column("name", Text, primary_key=True),
+    Column("beat_at", _tz(), nullable=False),
+)
+
 Index(
     "ux_alert_rules_scope_target",
     func.coalesce(alert_rules.c.customer_id, 0),

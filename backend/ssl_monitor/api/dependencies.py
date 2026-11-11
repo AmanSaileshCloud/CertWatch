@@ -14,6 +14,7 @@ from fastapi import Depends, Header, HTTPException, status
 
 from ..adapters.notifier.base import NotifierPort
 from ..adapters.secret_box import SecretBox
+from ..adapters.storage.heartbeat_postgres import PostgresHeartbeats
 from ..adapters.storage.base import (
     CatalogRepoPort,
     SettingsStorePort,
@@ -33,6 +34,7 @@ from ..handlers._deps import (
     make_email_notifier,
     make_notifier,
     make_secret_box,
+    make_engine,
     make_settings_store,
     make_storage,
     make_uptime_repo,
@@ -73,6 +75,15 @@ def get_catalog_repo() -> CatalogRepoPort:
 def get_settings_store() -> SettingsStorePort:
     """Process-wide store for settings saved on the admin Settings page."""
     return make_settings_store()
+
+
+@lru_cache(maxsize=1)
+def get_heartbeats() -> PostgresHeartbeats | None:
+    """Database ping + worker heartbeats for /health/ready (None without PostgreSQL)."""
+    settings = get_settings()
+    if settings.storage != "postgres":
+        return None
+    return PostgresHeartbeats(make_engine(settings))
 
 
 def get_secret_box(settings: Settings = Depends(get_app_settings)) -> SecretBox | None:

@@ -13,6 +13,7 @@ APP_DIR=$APP_HOME/app
 VENV_DIR=$APP_HOME/venv
 ENV_FILE=/etc/certwatch/certwatch.env
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BACKUP_DIR=$APP_HOME/backups
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "Run as root:  sudo bash deploy/update-pm2.sh" >&2
@@ -21,6 +22,17 @@ fi
 
 BUILD_FRONTEND=false
 [ "${1:-}" = "--frontend" ] && BUILD_FRONTEND=true
+
+DATABASE_URL="$(grep -E '^DATABASE_URL=' "$ENV_FILE" | tail -n 1 | cut -d= -f2-)"
+if [ -z "$DATABASE_URL" ]; then
+  echo "$ENV_FILE has no DATABASE_URL — CertWatch now needs PostgreSQL." >&2
+  echo "Run  sudo bash deploy/setup.sh  once to install it and switch to systemd." >&2
+  exit 1
+fi
+
+echo "==> Backing up the database"
+mkdir -p "$BACKUP_DIR"
+pg_dump --format=custom --dbname="$DATABASE_URL"   --file="$BACKUP_DIR/pre-update-$(date -u +%Y%m%dT%H%M%SZ).dump"
 
 echo "==> Syncing code to $APP_DIR"
 # Exclude .env so the symlink the app loads its config from is never deleted.
@@ -43,7 +55,16 @@ else
   echo "==> Skipping frontend rebuild (pass --frontend if the UI changed)"
 fi
 
+echo "==> Applying database migrations"
+( cd "$APP_DIR" && DATABASE_URL="$DATABASE_URL" "$VENV_DIR/bin/alembic" upgrade head )
+
 echo "==> Restarting PM2 processes"
 pm2 restart certwatch-api certwatch-checker
+if pm2 describe certwatch-uptime >/dev/null 2>&1; then
+  pm2 restart certwatch-uptime
+else
+  echo "    !! No certwatch-uptime process in PM2 — websites are NOT being monitored."
+  echo "    !! Recommended: switch to systemd with  sudo bash deploy/setup.sh"
+fi
 
 echo "✓ Update complete. Logs: pm2 logs certwatch-api"
