@@ -6,10 +6,33 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Engine, bindparam, case, func, insert, literal, select, update
+from sqlalchemy import (
+    DateTime,
+    Engine,
+    Integer,
+    bindparam,
+    case,
+    cast,
+    func,
+    insert,
+    literal,
+    select,
+    update,
+)
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from ...core.uptime_models import CheckResult, Monitor, MonitorState, MonitorType
-from ..db.tables import check_results, monitors
+from ...core.uptime_models import (
+    CheckResult,
+    Incident,
+    IncidentEvent,
+    Monitor,
+    MonitorState,
+    MonitorTransition,
+    MonitorType,
+)
+from ...core.incident_rules import evaluate_in_order
+from .base import IncidentRules
+from ..db.tables import check_results, incidents, monitors
 
 _CONFIG_FIELDS = (
     "customer_id",
@@ -58,17 +81,26 @@ def _result_to_row(result: CheckResult) -> dict[str, Any]:
     return {column.name: getattr(result, column.name) for column in _RESULT_COLUMNS}
 
 
-def _last_fields_row(result: CheckResult) -> dict[str, Any]:
+def _row_to_incident(row: Any) -> Incident:
+    return Incident(**row._mapping)
+
+
+def _monitor_state_row(transition: MonitorTransition) -> dict[str, Any]:
+    result = transition.result
     return {
         "b_id": result.monitor_id,
         "b_checked_at": result.checked_at,
         "b_status_code": result.status_code,
         "b_response_ms": result.response_ms,
         "b_error": result.error,
+        "b_state": transition.state.value,
+        "b_failures": transition.consecutive_failures,
+        "b_successes": transition.consecutive_successes,
+        "b_first_failure_at": transition.first_failure_at,
     }
 
 
-_UPDATE_LAST_FIELDS = (
+_UPDATE_MONITOR_STATE = (
     update(monitors)
     .where(monitors.c.id == bindparam("b_id"))
     .values(
@@ -76,6 +108,10 @@ _UPDATE_LAST_FIELDS = (
         last_status_code=bindparam("b_status_code"),
         last_response_ms=bindparam("b_response_ms"),
         last_error=bindparam("b_error"),
+        state=bindparam("b_state"),
+        consecutive_failures=bindparam("b_failures"),
+        consecutive_successes=bindparam("b_successes"),
+        first_failure_at=bindparam("b_first_failure_at"),
         updated_at=func.now(),
     )
 )
@@ -109,16 +145,28 @@ class PostgresUptimeRepo:
                 conn.execute(_advance_next_check(now, [m.id for m in claimed]))
         return claimed
 
-    def save_check_results(self, results: Sequence[CheckResult]) -> None:
+    def record_checks(self, results: Sequence[CheckResult], rules: IncidentRules) -> list[Incident]:
         if not results:
-            return
+            return []
         with self._engine.begin() as conn:
-            live_ids = _lock_existing_monitor_ids(conn, {r.monitor_id for r in results})
-            kept = [r for r in results if r.monitor_id in live_ids]
-            if not kept:
-                return
-            conn.execute(insert(check_results), [_result_to_row(r) for r in kept])
-            conn.execute(_UPDATE_LAST_FIELDS, [_last_fields_row(r) for r in kept])
+            current = _lock_active_monitors(conn, {r.monitor_id for r in results})
+            transitions = evaluate_in_order(current, results, rules)
+            if not transitions:
+                return []
+            conn.execute(insert(check_results), [_result_to_row(t.result) for t in transitions])
+            conn.execute(_UPDATE_MONITOR_STATE, [_monitor_state_row(t) for t in transitions])
+            return _apply_incident_events(conn, transitions)
+
+    def list_incidents(self, monitor_id: int | None = None, limit: int = 100) -> list[Incident]:
+        stmt = (
+            select(incidents)
+            .order_by(incidents.c.started_at.desc(), incidents.c.id.desc())
+            .limit(limit)
+        )
+        if monitor_id is not None:
+            stmt = stmt.where(incidents.c.monitor_id == monitor_id)
+        with self._engine.connect() as conn:
+            return [_row_to_incident(row) for row in conn.execute(stmt)]
 
     def list_check_results(self, monitor_id: int, limit: int = 100) -> list[CheckResult]:
         stmt = (
@@ -144,12 +192,57 @@ def _advance_next_check(now: datetime, ids: list[int]):
     )
 
 
-def _lock_existing_monitor_ids(conn: Any, ids: set[int]) -> set[int]:
-    """Return the ids that still exist, holding ``FOR KEY SHARE`` (the lightest
-    lock that blocks DELETE) so none vanish before this transaction's inserts land."""
+def _lock_active_monitors(conn: Any, ids: set[int]) -> dict[int, Monitor]:
+    """Lock the unpaused monitors among ``ids`` (FOR NO KEY UPDATE: blocks concurrent
+    edits/pauses/deletes until commit) and return their CURRENT stored state."""
     stmt = (
-        select(monitors.c.id)
-        .where(monitors.c.id.in_(ids))
-        .with_for_update(read=True, key_share=True)
+        select(monitors)
+        .where(monitors.c.id.in_(ids), ~monitors.c.is_paused)
+        .with_for_update(key_share=True)
     )
-    return set(conn.execute(stmt).scalars())
+    return {row.id: _row_to_monitor(row) for row in conn.execute(stmt)}
+
+
+def _apply_incident_events(conn: Any, transitions: list[MonitorTransition]) -> list[Incident]:
+    """Open/close incidents in transition order; return only rows actually changed."""
+    changed = []
+    for transition in transitions:
+        if transition.event is IncidentEvent.WENT_DOWN:
+            changed.append(_open_incident(conn, transition))
+        elif transition.event is IncidentEvent.RECOVERED:
+            changed.append(_close_incident(conn, transition.result))
+    return [incident for incident in changed if incident is not None]
+
+
+def _open_incident(conn: Any, transition: MonitorTransition) -> Incident | None:
+    """Insert an open incident unless the monitor already has one (partial unique index)."""
+    result = transition.result
+    stmt = (
+        pg_insert(incidents)
+        .values(
+            monitor_id=result.monitor_id,
+            started_at=transition.first_failure_at or result.checked_at,
+            reason=result.error,
+        )
+        .on_conflict_do_nothing(
+            index_elements=["monitor_id"], index_where=incidents.c.resolved_at.is_(None)
+        )
+        .returning(*incidents.c)
+    )
+    row = conn.execute(stmt).first()
+    return _row_to_incident(row) if row is not None else None
+
+
+def _close_incident(conn: Any, result: CheckResult) -> Incident | None:
+    """Resolve the monitor's open incident at ``result.checked_at``; None if none is open."""
+    resolved_at = literal(result.checked_at, DateTime(timezone=True))
+    elapsed = func.floor(func.extract("epoch", resolved_at - incidents.c.started_at))
+    stmt = (
+        update(incidents)
+        .where(incidents.c.monitor_id == result.monitor_id, incidents.c.resolved_at.is_(None))
+        .values(resolved_at=resolved_at,
+                duration_seconds=cast(func.greatest(0, elapsed), Integer))
+        .returning(*incidents.c)
+    )
+    row = conn.execute(stmt).first()
+    return _row_to_incident(row) if row is not None else None

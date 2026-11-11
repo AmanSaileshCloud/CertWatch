@@ -1,19 +1,27 @@
-"""PostgresUptimeRepo: monitors, claiming due checks, and check results."""
+"""PostgresUptimeRepo: monitors, claiming due checks, check results and incidents."""
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
+from dataclasses import replace
 
 import pytest
-from sqlalchemy import create_engine, delete, select, update
+from sqlalchemy import create_engine, delete, func, select
 
-from backend.ssl_monitor.adapters.db.tables import check_results, monitors
+from backend.ssl_monitor.adapters.db.tables import check_results, incidents, monitors
+from backend.ssl_monitor.adapters.storage import uptime_postgres
 from backend.ssl_monitor.adapters.storage.base import UptimeRepoPort
 from backend.ssl_monitor.adapters.storage.uptime_postgres import PostgresUptimeRepo
+from backend.ssl_monitor.core.incident_rules import evaluate
+from backend.ssl_monitor.services.uptime_checker import run_cycle
 from backend.ssl_monitor.core.uptime_models import (
     CheckResult,
+    Incident,
+    IncidentEvent,
     Monitor,
     MonitorState,
+    MonitorTransition,
     MonitorType,
 )
 
@@ -40,6 +48,38 @@ def _result(monitor_id: int, *, seconds: int = 0, **overrides) -> CheckResult:
                        **values)
 
 
+def _up(result: CheckResult) -> MonitorTransition:
+    return MonitorTransition(result=result, state=MonitorState.UP, consecutive_failures=0,
+                             consecutive_successes=1, first_failure_at=None)
+
+
+def _went_down(monitor_id: int, *, seconds: int = 0, started: int = -120,
+               error: str = "HTTP 503") -> MonitorTransition:
+    result = _result(monitor_id, seconds=seconds, is_up=False, status_code=503, error=error)
+    return MonitorTransition(result=result, state=MonitorState.DOWN, consecutive_failures=3,
+                             consecutive_successes=0,
+                             first_failure_at=NOW + dt.timedelta(seconds=started),
+                             event=IncidentEvent.WENT_DOWN)
+
+
+def _recovered(monitor_id: int, *, seconds: int = 0) -> MonitorTransition:
+    return MonitorTransition(result=_result(monitor_id, seconds=seconds), state=MonitorState.UP,
+                             consecutive_failures=0, consecutive_successes=2,
+                             first_failure_at=None, event=IncidentEvent.RECOVERED)
+
+
+def _count(pg, table) -> int:
+    with pg.connect() as conn:
+        return conn.execute(select(func.count()).select_from(table)).scalar_one()
+
+
+def _record(repo, transitions: list[MonitorTransition]) -> list[Incident]:
+    """Save prepared transitions through ``record_checks`` (rules return them as-is)."""
+    prepared = {id(t.result): t for t in transitions}
+    return repo.record_checks([t.result for t in transitions],
+                              lambda monitor, result: prepared[id(result)])
+
+
 def test_repo_satisfies_port(pg):
     assert isinstance(PostgresUptimeRepo(pg), UptimeRepoPort)
 
@@ -52,6 +92,7 @@ def test_add_and_get_round_trip_with_defaults(pg):
     assert added.id == 1
     assert added.type is MonitorType.HTTP
     assert added.state is MonitorState.UNKNOWN
+    assert (added.consecutive_failures, added.consecutive_successes) == (0, 0)
     assert added.timeout_seconds == 10
     assert added.expected_status == 200
     assert added.next_check_at is not None and added.next_check_at.tzinfo is not None
@@ -138,61 +179,262 @@ def test_claim_skips_rows_locked_by_another_worker(pg):
     assert repo.get_monitor(locked.id).next_check_at == locked.next_check_at
 
 
-def test_save_check_results_updates_last_fields_only(pg):
+def test_record_checks_persists_last_fields_and_transition_state(pg):
     repo = PostgresUptimeRepo(pg)
     added = repo.add_monitor(_monitor())
-    with pg.begin() as conn:
-        conn.execute(update(monitors).where(monitors.c.id == added.id)
-                     .values(state="down", consecutive_failures=2))
-    before = repo.get_monitor(added.id)
+    first_failure = NOW - dt.timedelta(seconds=60)
+    result = _result(added.id, is_up=False, status_code=503, response_ms=900, error="HTTP 503")
 
-    repo.save_check_results([_result(added.id, is_up=False, status_code=503,
-                                     response_ms=900, error="HTTP 503")])
+    returned = _record(repo, [MonitorTransition(
+        result=result, state=MonitorState.UNKNOWN, consecutive_failures=2,
+        consecutive_successes=0, first_failure_at=first_failure)])
 
     after = repo.get_monitor(added.id)
+    assert returned == []
     assert (after.last_checked_at, after.last_status_code, after.last_response_ms,
             after.last_error) == (NOW, 503, 900, "HTTP 503")
-    assert after.state is MonitorState.DOWN
-    assert after.consecutive_failures == 2
-    assert after.first_failure_at == before.first_failure_at
-    assert after.next_check_at == before.next_check_at
-    assert after.updated_at >= before.updated_at
-    assert len(repo.list_check_results(added.id)) == 1
+    assert (after.state, after.consecutive_failures, after.consecutive_successes,
+            after.first_failure_at) == (MonitorState.UNKNOWN, 2, 0, first_failure)
+    assert after.next_check_at == added.next_check_at
+    assert after.updated_at >= added.updated_at
+    assert repo.list_check_results(added.id) == [result]
 
 
-def test_save_empty_results_is_noop(pg):
-    PostgresUptimeRepo(pg).save_check_results([])
+def test_record_checks_clears_first_failure_and_counts_successes(pg):
+    repo = PostgresUptimeRepo(pg)
+    added = repo.add_monitor(_monitor())
+    _record(repo, [_went_down(added.id)])
+    _record(repo, [_recovered(added.id, seconds=5)])
+
+    after = repo.get_monitor(added.id)
+    assert (after.state, after.consecutive_failures, after.consecutive_successes,
+            after.first_failure_at) == (MonitorState.UP, 0, 2, None)
 
 
-def test_results_for_deleted_monitor_are_dropped(pg):
+def test_record_empty_transitions_is_noop(pg):
+    assert _record(PostgresUptimeRepo(pg), []) == []
+
+
+def test_went_down_opens_incident(pg):
+    repo = PostgresUptimeRepo(pg)
+    added = repo.add_monitor(_monitor())
+
+    opened = _record(repo, [_went_down(added.id, started=-120, error="timeout")])
+
+    assert opened == [Incident(id=1, monitor_id=added.id,
+                               started_at=NOW - dt.timedelta(seconds=120), reason="timeout")]
+    assert opened[0].is_open
+    assert repo.list_incidents() == opened
+
+
+def test_went_down_without_first_failure_starts_at_checked_at(pg):
+    repo = PostgresUptimeRepo(pg)
+    added = repo.add_monitor(_monitor())
+
+    [opened] = _record(repo, [replace(_went_down(added.id, seconds=7),
+                                           first_failure_at=None)])
+
+    assert opened.started_at == NOW + dt.timedelta(seconds=7)
+
+
+def test_second_went_down_while_open_opens_nothing(pg):
+    repo = PostgresUptimeRepo(pg)
+    added = repo.add_monitor(_monitor())
+    [first] = _record(repo, [_went_down(added.id)])
+
+    again = _record(repo, [_went_down(added.id, seconds=60, error="other")])
+
+    assert again == []
+    assert repo.list_incidents() == [first]
+    assert len(repo.list_check_results(added.id)) == 2
+
+
+def test_recovered_closes_open_incident(pg):
+    repo = PostgresUptimeRepo(pg)
+    added = repo.add_monitor(_monitor())
+    [opened] = _record(repo, [_went_down(added.id, started=-120)])
+
+    closed = _record(repo, [_recovered(added.id, seconds=5)])
+
+    expected = replace(opened, resolved_at=NOW + dt.timedelta(seconds=5), duration_seconds=125)
+    assert closed == [expected]
+    assert repo.list_incidents() == [expected]
+
+
+def test_recovered_duration_floors_fractional_seconds(pg):
+    repo = PostgresUptimeRepo(pg)
+    added = repo.add_monitor(_monitor())
+    _record(repo, [_went_down(added.id, started=-10)])
+    late = replace(_result(added.id), checked_at=NOW + dt.timedelta(milliseconds=999))
+
+    [closed] = _record(repo, [replace(_recovered(added.id), result=late)])
+
+    assert closed.duration_seconds == 10
+
+
+def test_recovered_without_open_incident_is_noop(pg):
+    repo = PostgresUptimeRepo(pg)
+    added = repo.add_monitor(_monitor())
+
+    assert _record(repo, [_recovered(added.id)]) == []
+    assert repo.list_incidents() == []
+    assert repo.get_monitor(added.id).state is MonitorState.UP
+
+
+def test_went_down_after_recovery_opens_new_incident(pg):
+    repo = PostgresUptimeRepo(pg)
+    added = repo.add_monitor(_monitor())
+    _record(repo, [_went_down(added.id, started=-120)])
+    _record(repo, [_recovered(added.id)])
+
+    [reopened] = _record(repo, [_went_down(added.id, seconds=300, started=200)])
+
+    assert reopened.id == 2 and reopened.is_open
+    assert [i.id for i in repo.list_incidents(added.id)] == [2, 1]
+
+
+def test_incident_changes_return_in_transition_order(pg):
+    repo = PostgresUptimeRepo(pg)
+    a = repo.add_monitor(_monitor("a"))
+    b = repo.add_monitor(_monitor("b"))
+    _record(repo, [_went_down(a.id)])
+
+    changed = _record(repo, [_went_down(b.id), _up(_result(a.id)),
+                                  _recovered(a.id, seconds=1)])
+
+    assert [(i.monitor_id, i.is_open) for i in changed] == [(b.id, True), (a.id, False)]
+
+
+def test_transitions_for_deleted_monitors_are_dropped(pg):
     repo = PostgresUptimeRepo(pg)
     kept = repo.add_monitor(_monitor("kept"))
     gone = repo.add_monitor(_monitor("gone"))
     with pg.begin() as conn:
         conn.execute(delete(monitors).where(monitors.c.id == gone.id))
 
-    repo.save_check_results([_result(gone.id), _result(kept.id)])
+    opened = _record(repo, [_went_down(gone.id), _went_down(kept.id),
+                                 _up(_result(12345))])
 
     with pg.connect() as conn:
         stored = conn.execute(select(check_results.c.monitor_id)).scalars().all()
     assert stored == [kept.id]
-    assert repo.get_monitor(kept.id).last_checked_at == NOW
+    assert [i.monitor_id for i in opened] == [kept.id]
+    assert repo.get_monitor(kept.id).state is MonitorState.DOWN
 
 
-def test_results_only_for_deleted_monitors_write_nothing(pg):
+def test_transitions_only_for_deleted_monitors_write_nothing(pg):
     repo = PostgresUptimeRepo(pg)
-    repo.save_check_results([_result(12345)])
-    assert repo.list_check_results(12345) == []
+    assert _record(repo, [_went_down(12345)]) == []
+    assert _count(pg, check_results) == 0
+    assert _count(pg, incidents) == 0
+
+
+def test_record_checks_is_atomic(pg, monkeypatch):
+    repo = PostgresUptimeRepo(pg)
+    added = repo.add_monitor(_monitor())
+
+    def fail(conn, transition):
+        raise RuntimeError("incident step failed")
+
+    monkeypatch.setattr(uptime_postgres, "_open_incident", fail)
+    with pytest.raises(RuntimeError, match="incident step failed"):
+        _record(repo, [_went_down(added.id)])
+
+    assert _count(pg, check_results) == 0
+    assert _count(pg, incidents) == 0
+    assert repo.get_monitor(added.id) == added
+
+
+def test_list_incidents_newest_first_with_filter_and_limit(pg):
+    repo = PostgresUptimeRepo(pg)
+    a = repo.add_monitor(_monitor("a"))
+    b = repo.add_monitor(_monitor("b"))
+    _record(repo, [_went_down(a.id, started=-300)])
+    _record(repo, [_recovered(a.id)])
+    _record(repo, [_went_down(a.id, started=-100), _went_down(b.id, started=-200)])
+
+    assert [(i.monitor_id, i.started_at) for i in repo.list_incidents()] == [
+        (a.id, NOW - dt.timedelta(seconds=100)),
+        (b.id, NOW - dt.timedelta(seconds=200)),
+        (a.id, NOW - dt.timedelta(seconds=300)),
+    ]
+    assert [i.id for i in repo.list_incidents(a.id)] == [2, 1]
+    assert [i.id for i in repo.list_incidents(limit=1)] == [2]
+    assert repo.list_incidents(monitor_id=999) == []
+
+
+def test_list_incidents_ties_break_on_newest_id(pg):
+    repo = PostgresUptimeRepo(pg)
+    a = repo.add_monitor(_monitor("a"))
+    b = repo.add_monitor(_monitor("b"))
+    _record(repo, [_went_down(a.id), _went_down(b.id)])
+    assert [i.monitor_id for i in repo.list_incidents()] == [b.id, a.id]
 
 
 def test_list_check_results_newest_first_with_limit(pg):
     repo = PostgresUptimeRepo(pg)
     added = repo.add_monitor(_monitor())
     other = repo.add_monitor(_monitor("other"))
-    repo.save_check_results([_result(added.id, seconds=s) for s in (10, 30, 20)]
-                            + [_result(other.id, seconds=99)])
+    _record(repo, [_up(_result(added.id, seconds=s)) for s in (10, 30, 20)]
+                       + [_up(_result(other.id, seconds=99))])
 
     listed = repo.list_check_results(added.id, limit=2)
 
     assert [r.checked_at for r in listed] == [NOW + dt.timedelta(seconds=s) for s in (30, 20)]
     assert listed[0] == _result(added.id, seconds=30)
+
+
+# ── Rules run against the CURRENT stored state (pause/edit during a check wins) ──
+
+
+def _down(monitor_id: int, *, seconds: int = 0) -> CheckResult:
+    return _result(monitor_id, seconds=seconds, is_up=False, status_code=503, error="HTTP 503")
+
+
+def test_result_for_monitor_paused_during_the_check_is_dropped(pg):
+    repo = PostgresUptimeRepo(pg)
+    added = repo.add_monitor(_monitor())
+    repo.claim_due_monitors(NOW, limit=10)
+    with pg.begin() as conn:
+        conn.execute(monitors.update().values(is_paused=True))
+
+    assert repo.record_checks([_down(added.id)], evaluate) == []
+    assert _count(pg, check_results) == 0
+    assert repo.get_monitor(added.id).consecutive_failures == 0
+
+
+def test_rules_see_state_changed_after_the_claim(pg):
+    repo = PostgresUptimeRepo(pg)
+    added = repo.add_monitor(_monitor())
+    repo.record_checks([_down(added.id), _down(added.id, seconds=60)], evaluate)
+    with pg.begin() as conn:  # e.g. the monitor was edited: counters reset
+        conn.execute(monitors.update().values(consecutive_failures=0, first_failure_at=None))
+
+    opened = repo.record_checks([_down(added.id, seconds=120)], evaluate)
+
+    assert opened == []
+    assert repo.get_monitor(added.id).consecutive_failures == 1
+
+
+def test_full_lifecycle_through_run_cycle_against_postgres(pg):
+    repo = PostgresUptimeRepo(pg)
+    added = repo.add_monitor(_monitor(due_in=0))
+    outcomes = iter([False, False, False, True])
+
+    async def probe(monitor, checked_at):
+        is_up = next(outcomes)
+        return CheckResult(monitor.id, checked_at, is_up=is_up,
+                           error=None if is_up else "HTTP 503")
+
+    summaries = []
+    for cycle in range(4):
+        now = NOW + dt.timedelta(seconds=60 * cycle)
+        summaries.append(asyncio.run(run_cycle(
+            repo, probe, now=now, max_concurrency=5, clock=lambda now=now: now)))
+
+    assert [(s.went_down, s.recovered) for s in summaries] == [(0, 0), (0, 0), (1, 0), (0, 1)]
+    [incident] = repo.list_incidents(added.id)
+    assert incident.started_at == NOW
+    assert incident.resolved_at == NOW + dt.timedelta(seconds=180)
+    assert (incident.duration_seconds, incident.reason) == (180, "HTTP 503")
+    assert repo.get_monitor(added.id).state is MonitorState.UP

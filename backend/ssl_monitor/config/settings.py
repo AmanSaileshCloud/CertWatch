@@ -128,6 +128,8 @@ class Settings:
     uptime_user_agent: str = "CertWatch-Uptime/1.0"
     uptime_region: str = "default"  # stamped on each result (multi-region later)
     uptime_max_body_bytes: int = 1_000_000  # page bytes read for the keyword check
+    uptime_failure_threshold: int = 3  # failures in a row before a monitor is DOWN
+    uptime_recovery_threshold: int = 1  # successes in a row before it is UP again
 
     @property
     def is_local(self) -> bool:
@@ -214,6 +216,8 @@ class Settings:
             uptime_user_agent=_required(e, "UPTIME_USER_AGENT", "CertWatch-Uptime/1.0"),
             uptime_region=_required(e, "UPTIME_REGION", "default"),
             uptime_max_body_bytes=_positive(int, e, "UPTIME_MAX_BODY_BYTES", "1000000"),
+            uptime_failure_threshold=_positive(int, e, "UPTIME_FAILURE_THRESHOLD", "3"),
+            uptime_recovery_threshold=_positive(int, e, "UPTIME_RECOVERY_THRESHOLD", "1"),
         )
 
     def boto_kwargs(self) -> dict:

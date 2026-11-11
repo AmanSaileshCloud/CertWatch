@@ -79,7 +79,8 @@ def _print_checks(results: list[tuple[str, CheckResult]]) -> None:
 def _print_summary(summary: CycleSummary) -> None:
     print(
         f"Checked {summary.checked} monitor(s) at {summary.checked_at.isoformat()}: "
-        f"{summary.up} up, {summary.down} down"
+        f"{summary.up} up, {summary.down} down; "
+        f"{summary.went_down} went down, {summary.recovered} recovered"
     )
 
 
@@ -112,6 +113,8 @@ async def _cycle(settings: Settings, repo: UptimeRepoPort, probe: UptimeProbeFn)
         now=_now(),
         max_concurrency=settings.uptime_max_concurrency,
         region=settings.uptime_region,
+        failure_threshold=settings.uptime_failure_threshold,
+        recovery_threshold=settings.uptime_recovery_threshold,
     )
 
 

@@ -7,12 +7,15 @@ wiring layer do.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from ...core.models import DomainRecord
-from ...core.uptime_models import CheckResult, Monitor
+from ...core.uptime_models import CheckResult, Incident, Monitor, MonitorTransition
+
+# (current monitor, result) -> transition; the incident rules with thresholds bound.
+IncidentRules = Callable[[Monitor, CheckResult], MonitorTransition]
 
 
 @runtime_checkable
@@ -52,10 +55,30 @@ class UptimeRepoPort(Protocol):
         never claims the same monitor. Returned monitors carry the *old* values."""
         ...
 
-    def save_check_results(self, results: Sequence[CheckResult]) -> None:
-        """Insert the results and copy each one onto its monitor's ``last_*``
-        columns (``last_checked_at``, ``last_status_code``, ``last_response_ms``,
-        ``last_error``). Results for monitors deleted meanwhile are dropped."""
+    def record_checks(self, results: Sequence[CheckResult], rules: IncidentRules) -> list[Incident]:
+        """Persist one cycle's outcome in ONE transaction.
+
+        Each monitor row is locked and re-read, and ``rules(current_monitor, result)``
+        is applied to the CURRENT stored state — never to the snapshot taken at claim
+        time — so a pause or edit made while the check was in flight is respected.
+        Results for monitors that were deleted or paused meanwhile are dropped.
+        For the rest:
+
+        * insert the result into check_results;
+        * copy it onto the monitor's ``last_*`` columns, and set ``state``,
+          ``consecutive_failures``, ``consecutive_successes``, ``first_failure_at``
+          from the transition;
+        * ``WENT_DOWN``: open an incident (``started_at = first_failure_at``,
+          ``reason`` = the error of the check that confirmed the outage) unless one
+          is already open for the monitor;
+        * ``RECOVERED``: close the open incident (``resolved_at = result.checked_at``,
+          ``duration_seconds`` = whole seconds since ``started_at``); no-op if none open.
+
+        Returns the incidents opened or closed by this call, in result order."""
+        ...
+
+    def list_incidents(self, monitor_id: int | None = None, limit: int = 100) -> list[Incident]:
+        """Incidents newest-started first; all monitors when ``monitor_id`` is None."""
         ...
 
     def list_check_results(self, monitor_id: int, limit: int = 100) -> list[CheckResult]:

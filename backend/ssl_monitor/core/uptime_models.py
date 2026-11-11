@@ -48,6 +48,7 @@ class Monitor:
     is_paused: bool = False
     state: MonitorState = MonitorState.UNKNOWN
     consecutive_failures: int = 0
+    consecutive_successes: int = 0
     first_failure_at: datetime | None = None
     next_check_at: datetime | None = None
     last_checked_at: datetime | None = None
@@ -69,3 +70,45 @@ class CheckResult:
     response_ms: int | None = None
     error: str | None = None
     region: str = DEFAULT_REGION
+
+
+class IncidentEvent(str, Enum):
+    """What one check result did to a monitor's confirmed state."""
+
+    NONE = "none"
+    WENT_DOWN = "went_down"  # failure threshold reached: open an incident
+    RECOVERED = "recovered"  # recovery threshold reached: close the incident
+
+
+@dataclass(frozen=True)
+class MonitorTransition:
+    """A check result plus the monitor state it leads to (output of the incident rules)."""
+
+    result: CheckResult
+    state: MonitorState
+    consecutive_failures: int
+    consecutive_successes: int
+    first_failure_at: datetime | None
+    event: IncidentEvent = IncidentEvent.NONE
+
+    @property
+    def monitor_id(self) -> int:
+        return self.result.monitor_id
+
+
+@dataclass(frozen=True)
+class Incident:
+    """One confirmed outage of one monitor. Open while ``resolved_at`` is None."""
+
+    id: int
+    monitor_id: int
+    started_at: datetime
+    resolved_at: datetime | None = None
+    duration_seconds: int | None = None
+    reason: str | None = None
+    down_alert_sent_at: datetime | None = None
+    recovery_alert_sent_at: datetime | None = None
+
+    @property
+    def is_open(self) -> bool:
+        return self.resolved_at is None

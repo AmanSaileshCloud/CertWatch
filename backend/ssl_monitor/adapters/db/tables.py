@@ -110,6 +110,7 @@ monitors = Table(
     Column("is_paused", Boolean, nullable=False, server_default=text("false")),
     Column("state", Text, nullable=False, server_default=MonitorState.UNKNOWN.value),
     Column("consecutive_failures", Integer, nullable=False, server_default="0"),
+    Column("consecutive_successes", Integer, nullable=False, server_default="0"),
     Column("first_failure_at", _tz()),
     Column("next_check_at", _tz(), nullable=False, server_default=func.now()),
     Column("last_checked_at", _tz()),

@@ -6,7 +6,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 from backend.ssl_monitor.adapters.storage.uptime_memory import MemoryUptimeRepo
-from backend.ssl_monitor.core.uptime_models import CheckResult, Monitor
+from backend.ssl_monitor.core.uptime_models import CheckResult, Monitor, MonitorState
 from backend.ssl_monitor.services.uptime_checker import CycleSummary, run_cycle
 
 NOW = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
@@ -32,6 +32,7 @@ def _result(monitor: Monitor, now: datetime, *, up: bool) -> CheckResult:
         is_up=up,
         status_code=200 if up else 503,
         response_ms=12,
+        error=None if up else "HTTP 503",
     )
 
 
@@ -131,8 +132,8 @@ def test_crashing_probe_becomes_down_result_and_others_still_saved():
 
 def test_no_due_monitors_gives_zero_summary_without_saving():
     class NothingDueRepo(MemoryUptimeRepo):
-        def save_check_results(self, results):
-            raise AssertionError("save should not be called")
+        def record_checks(self, results, rules):
+            raise AssertionError("record_checks should not be called")
 
     summary = _run(NothingDueRepo(), RecordingProbe())
 
@@ -161,3 +162,112 @@ def test_crash_result_carries_the_worker_region():
     asyncio.run(run_cycle(repo, probe, now=NOW, max_concurrency=1, region="ap-south-1"))
 
     assert repo.list_check_results(boom.id)[0].region == "ap-south-1"
+
+
+# ── Incidents: consecutive-failure rule end to end ──────────────────────────
+
+INTERVAL = timedelta(seconds=60)
+CHECK_DELAY = timedelta(seconds=1)
+
+
+def _check_time(cycle: int) -> datetime:
+    """When the (single) check in cycle ``cycle`` is stamped — distinct per cycle."""
+    return NOW + cycle * INTERVAL + CHECK_DELAY
+
+
+def _run_nth(repo, probe, cycle: int, **thresholds) -> CycleSummary:
+    """Run cycle number ``cycle`` (0-based); each is one interval later, so monitors are due."""
+    return asyncio.run(
+        run_cycle(
+            repo,
+            probe,
+            now=NOW + cycle * INTERVAL,
+            max_concurrency=10,
+            clock=lambda: _check_time(cycle),
+            **thresholds,
+        )
+    )
+
+
+def test_three_failures_open_one_incident_and_recovery_closes_it():
+    repo = MemoryUptimeRepo()
+    site = _add(repo, "site")
+    probe = RecordingProbe(down={"site"})
+
+    for cycle in (0, 1):
+        summary = _run_nth(repo, probe, cycle)
+        assert (summary.went_down, summary.incidents) == (0, ())
+        assert repo.list_incidents(site.id) == []
+        assert repo.get_monitor(site.id).state is MonitorState.UNKNOWN
+
+    third = _run_nth(repo, probe, 2)
+
+    assert third.went_down == 1 and third.recovered == 0
+    [incident] = repo.list_incidents(site.id)
+    assert incident.is_open
+    assert incident.started_at == _check_time(0)
+    assert incident.reason == "HTTP 503"
+    assert third.incidents == (incident,)
+    assert repo.get_monitor(site.id).state is MonitorState.DOWN
+
+    fourth = _run_nth(repo, probe, 3)
+
+    assert (fourth.went_down, fourth.recovered, fourth.incidents) == (0, 0, ())
+    assert len(repo.list_incidents(site.id)) == 1
+
+    probe.down = set()
+    back = _run_nth(repo, probe, 4)
+
+    assert back.recovered == 1 and back.went_down == 0
+    [closed] = repo.list_incidents(site.id)
+    assert closed.id == incident.id
+    assert closed.resolved_at == _check_time(4)
+    assert closed.duration_seconds == 240
+    assert back.incidents == (closed,)
+    assert repo.get_monitor(site.id).state is MonitorState.UP
+
+
+def test_two_failures_then_success_never_opens_an_incident():
+    repo = MemoryUptimeRepo()
+    site = _add(repo, "site")
+    probe = RecordingProbe(down={"site"})
+
+    summaries = [_run_nth(repo, probe, 0), _run_nth(repo, probe, 1)]
+    probe.down = set()
+    summaries.append(_run_nth(repo, probe, 2))
+
+    assert all(s.went_down == 0 and s.recovered == 0 for s in summaries)
+    assert repo.list_incidents(site.id) == []
+    assert repo.get_monitor(site.id).state is MonitorState.UP
+
+
+def test_custom_failure_threshold_goes_down_on_first_failure():
+    repo = MemoryUptimeRepo()
+    site = _add(repo, "site")
+
+    summary = _run_nth(repo, RecordingProbe(down={"site"}), 0, failure_threshold=1)
+
+    assert summary.went_down == 1
+    assert summary.incidents[0].started_at == _check_time(0)
+    assert repo.get_monitor(site.id).state is MonitorState.DOWN
+
+
+def test_custom_recovery_threshold_needs_two_successes():
+    repo = MemoryUptimeRepo()
+    site = _add(repo, "site")
+    probe = RecordingProbe(down={"site"})
+    thresholds = {"failure_threshold": 1, "recovery_threshold": 2}
+    _run_nth(repo, probe, 0, **thresholds)
+    probe.down = set()
+
+    first_success = _run_nth(repo, probe, 1, **thresholds)
+
+    assert first_success.recovered == 0
+    assert repo.get_monitor(site.id).state is MonitorState.DOWN
+    assert repo.list_incidents(site.id)[0].is_open
+
+    second_success = _run_nth(repo, probe, 2, **thresholds)
+
+    assert second_success.recovered == 1
+    assert second_success.incidents[0].duration_seconds == 120
+    assert repo.get_monitor(site.id).state is MonitorState.UP
