@@ -23,7 +23,7 @@ from ...services.monitor_validation import UrlCheck
 from ...services.monitors import describe_monitors
 from ...services.url_policy import validate_monitor_url
 from ..dependencies import (
-    get_alert_config,
+    get_cached_alert_config,
     get_app_settings,
     get_catalog_repo,
     get_dns_resolver,
@@ -85,7 +85,7 @@ def get_refresh(
     return refresh
 
 
-def get_alert_defaults(config: AlertConfig = Depends(get_alert_config)) -> AlertTiming:
+def get_alert_defaults(config: AlertConfig = Depends(get_cached_alert_config)) -> AlertTiming:
     """The global alert timing: Settings page value, else UPTIME_* env, else default."""
     return AlertTiming(
         alert_delay_minutes=config.uptime_alert_delay_minutes,

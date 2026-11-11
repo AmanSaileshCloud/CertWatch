@@ -50,3 +50,10 @@ def test_production_env_template_uses_postgres() -> None:
     env = (DEPLOY_DIR / "certwatch.env.example").read_text("utf-8")
     assert re.search(r"^STORAGE=postgres$", env, re.M)
     assert re.search(r"^DATABASE_URL=postgresql://", env, re.M)
+
+
+def test_vite_dev_proxy_forwards_every_api_route() -> None:
+    vite = (DEPLOY_DIR.parent / "frontend" / "vite.config.ts").read_text("utf-8")
+    proxied = set(re.findall(r'"/([a-z-]+)":\s*DEV_API', vite))
+    missing = _api_prefixes() - proxied
+    assert not missing, f"frontend/vite.config.ts does not proxy: {sorted(missing)}"

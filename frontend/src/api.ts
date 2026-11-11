@@ -16,9 +16,12 @@ import type {
   CertInfo,
   CheckSummary,
   DomainRecord,
+  DowntimeEntry,
   MessageResponse,
   NewUser,
+  ReportQuery,
   TokenResponse,
+  UptimeReport,
   User,
 } from "./types";
 
@@ -87,6 +90,26 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** Authenticated GET of a file (PDF, CSV) as a Blob. */
+async function requestBlob(path: string): Promise<Blob> {
+  const token = getToken();
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
+  } catch {
+    throw new ApiError("Cannot reach the API. Is it running on :8000?");
+  }
+  if (res.status === 401) {
+    clearToken();
+    window.dispatchEvent(new Event("auth:unauthorized"));
+    throw new ApiError(await errorMessage(res), res.status);
+  }
+  if (!res.ok) throw new ApiError(await errorMessage(res), res.status);
+  return res.blob();
+}
+
 export const api = {
   login: (username: string, password: string) =>
     request<TokenResponse>("/auth/login", {
@@ -145,24 +168,17 @@ export const api = {
     }),
 
   /** Fetch the rendered status report PDF (admin-only) for local download. */
-  downloadReport: async (): Promise<Blob> => {
-    const token = getToken();
-    let res: Response;
-    try {
-      res = await fetch(`${BASE}/checks/digest`, {
-        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      });
-    } catch {
-      throw new ApiError("Cannot reach the API. Is it running on :8000?");
-    }
-    if (res.status === 401) {
-      clearToken();
-      window.dispatchEvent(new Event("auth:unauthorized"));
-      throw new ApiError(await errorMessage(res));
-    }
-    if (!res.ok) throw new ApiError(await errorMessage(res));
-    return res.blob();
-  },
+  downloadReport: () => requestBlob("/checks/digest"),
+
+  // ── Uptime reports ──
+  uptimeReport: (q: ReportQuery) => request<UptimeReport>(`/reports/uptime${query({ ...q })}`),
+  downtimeLog: (q: ReportQuery) =>
+    request<DowntimeEntry[]>(`/reports/downtime${query({ start: q.start, end: q.end, customer_id: q.customer_id })}`),
+  /** CSV files (with the server's filename) for the report tabs. */
+  uptimeReportCsv: (q: ReportQuery, level: "monitor" | "customer") =>
+    requestBlob(`/reports/uptime.csv${query({ ...q, level })}`),
+  downtimeLogCsv: (q: ReportQuery) =>
+    requestBlob(`/reports/downtime.csv${query({ start: q.start, end: q.end, customer_id: q.customer_id })}`),
 
   runChecks: () => request<CheckSummary>("/checks/run", { method: "POST" }),
 

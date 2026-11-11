@@ -53,6 +53,7 @@ from .routers import (
     groups,
     install_error_handlers,
     monitors,
+    reports,
     settings as settings_router,
 )
 from .dependencies import (
@@ -147,7 +148,7 @@ app.add_middleware(
 
 install_error_handlers(app)
 for _router in (customers.router, groups.router, monitors.router, alerts.router,
-                settings_router.router):
+                settings_router.router, reports.router):
     app.include_router(_router)
 
 

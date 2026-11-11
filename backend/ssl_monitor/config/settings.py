@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..core.alert_models import ALLOWED_ALERT_DELAY_MINUTES, ALLOWED_REMINDER_MINUTES
 
@@ -91,6 +92,15 @@ def _positive(kind: type, env: Mapping[str, str], key: str, default: str):
     return value
 
 
+def _time_zone(env: Mapping[str, str], key: str, default: str) -> str:
+    value = env.get(key, default).strip() or default
+    try:
+        ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValueError(f"{key} must be a time zone name like Asia/Kolkata (got {value!r})") from exc
+    return value
+
+
 def _one_of(env: Mapping[str, str], key: str, default: str, allowed: tuple[int, ...]) -> int:
     value = int(env.get(key, default))
     if value not in allowed:
@@ -147,6 +157,8 @@ class Settings:
     uptime_alert_delay_minutes: int = 0  # only alert once down for at least N min
     # Raw check results older than this are deleted by the hourly rollup job.
     uptime_raw_retention_days: int = 30
+    # Time zone that report days, weeks and months are counted in.
+    report_timezone: str = "Asia/Kolkata"
     public_url: str | None = None  # dashboard URL used for links in alert emails
     # Fernet key that encrypts secrets saved from the UI (SES SMTP password).
     # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
@@ -244,6 +256,7 @@ class Settings:
             uptime_alert_delay_minutes=_one_of(
                 e, "UPTIME_ALERT_DELAY_MINUTES", "0", ALLOWED_ALERT_DELAY_MINUTES),
             uptime_raw_retention_days=_positive(int, e, "UPTIME_RAW_RETENTION_DAYS", "30"),
+            report_timezone=_time_zone(e, "REPORT_TIMEZONE", "Asia/Kolkata"),
             public_url=(e.get("CERTWATCH_PUBLIC_URL", "").strip().rstrip("/") or None),
             settings_encryption_key=(e.get("SETTINGS_ENCRYPTION_KEY", "").strip() or None),
             uptime_allow_private_targets=(

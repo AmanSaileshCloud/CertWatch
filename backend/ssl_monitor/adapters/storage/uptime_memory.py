@@ -9,11 +9,13 @@ from __future__ import annotations
 from collections.abc import Callable, Collection, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ...core.alert_models import AlertCandidate, AlertKind, RECENTLY_CLOSED_WINDOW_HOURS
 from ...core.incident_rules import apply_transition, evaluate_in_order
+from ...core.reports import CheckStats, Granularity, period_key
 from ...core.uptime_models import (
     CheckResult,
     CloseReason,
@@ -195,6 +197,29 @@ class MemoryUptimeRepo:
                 total, up = counts.get(result.monitor_id, (0, 0))
                 counts[result.monitor_id] = (total + 1, up + result.is_up)
         return counts
+
+    def incidents_between(self, start: datetime, end: datetime) -> list[Incident]:
+        return sorted(
+            (i for i in self._incidents.values()
+             if i.started_at < end and (i.resolved_at is None or i.resolved_at > start)),
+            key=lambda i: (i.started_at, i.id),
+        )
+
+    def check_stats(
+        self, start: datetime, end: datetime, *, tz: str, unit: str
+    ) -> dict[tuple[int, date], CheckStats]:
+        # The in-memory store keeps every raw result, so no hourly summaries are needed.
+        zone, granularity = ZoneInfo(tz), Granularity(unit)
+        stats: dict[tuple[int, date], CheckStats] = {}
+        for r in self._results:
+            if not start <= r.checked_at < end:
+                continue
+            day = r.checked_at.astimezone(zone).date()
+            key = (r.monitor_id, period_key(day, granularity, day))
+            ms = r.response_ms
+            stats[key] = stats.get(key, CheckStats()) + CheckStats(
+                1, int(r.is_up), float(ms or 0), int(ms is not None))
+        return stats
 
     def alert_candidates(self, now: datetime) -> list[AlertCandidate]:
         candidates = []

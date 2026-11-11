@@ -251,3 +251,73 @@ export interface AlertSettingsUpdate {
   smtp_username?: string | null;
   smtp_password?: string | null;
 }
+
+// ── Uptime reports (/reports) ──
+export type ReportGranularity = "day" | "week" | "month" | "total";
+
+export interface ReportPeriod {
+  key: string;
+  label: string;
+  start: string;
+  end: string;
+}
+
+export interface ReportFigures {
+  uptime_pct: number | null;
+  downtime_seconds: number;
+  monitored_seconds: number;
+  incidents: number;
+  checks: number;
+  failed_checks: number;
+  avg_response_ms: number | null;
+}
+
+export interface MonitorReport {
+  monitor_id: number;
+  name: string;
+  url: string;
+  customer_id: number | null;
+  customer_name: string | null;
+  group_name: string | null;
+  periods: ReportFigures[];
+  total: ReportFigures;
+}
+
+export interface CustomerReport {
+  customer_id: number | null;
+  customer_name: string;
+  monitors: number;
+  periods: ReportFigures[];
+  total: ReportFigures;
+}
+
+export interface UptimeReport {
+  first: string;
+  last: string;
+  granularity: ReportGranularity;
+  timezone: string;
+  periods: ReportPeriod[];
+  monitors: MonitorReport[];
+  customers: CustomerReport[];
+}
+
+export interface DowntimeEntry {
+  incident_id: number;
+  monitor_id: number;
+  monitor_name: string;
+  url: string;
+  customer_name: string | null;
+  group_name: string | null;
+  started_at: string;
+  resolved_at: string | null;
+  downtime_seconds: number;
+  reason: string | null;
+  close_reason: CloseReason | null;
+}
+
+export interface ReportQuery {
+  start: string;
+  end: string;
+  granularity: ReportGranularity;
+  customer_id?: number;
+}

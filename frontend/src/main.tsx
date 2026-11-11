@@ -9,6 +9,7 @@ import "./styles/websites.css";
 import "./styles/groups.css";
 import "./styles/alerts.css";
 import "./styles/settings.css";
+import "./styles/reports.css";
 
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("root element missing");

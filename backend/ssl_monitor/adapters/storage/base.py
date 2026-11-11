@@ -9,13 +9,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Collection, Mapping, Sequence
 from contextlib import AbstractContextManager
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Protocol, runtime_checkable
 
 from ...core.alert_models import AlertCandidate, AlertKind, AlertRule
 from ...core.app_settings_models import StoredSettings
 from ...core.catalog_models import Customer, MonitorGroup
 from ...core.models import DomainRecord
+from ...core.reports import CheckStats
 from ...core.uptime_models import CheckResult, CloseReason, Incident, Monitor, MonitorTransition
 
 # (current monitor, result) -> transition; the incident rules with thresholds bound.
@@ -128,6 +129,20 @@ class UptimeRepoPort(Protocol):
         """``{monitor_id: (total_checks, up_checks)}`` for checks at or after ``since``,
         only for ``monitor_ids`` when given (all monitors when None). Monitors with no
         checks in the window are absent."""
+        ...
+
+    def incidents_between(self, start: datetime, end: datetime) -> list[Incident]:
+        """Incidents that overlap [start, end): started before ``end`` and still open
+        or resolved after ``start``. Oldest first."""
+        ...
+
+    def check_stats(
+        self, start: datetime, end: datetime, *, tz: str, unit: str
+    ) -> dict[tuple[int, date], CheckStats]:
+        """``{(monitor_id, local calendar start): CheckStats}`` for checks in
+        [start, end), grouped by ``unit`` ("day" | "week" | "month") in time zone
+        ``tz``. Reads the hourly summaries for summarised hours and the raw results
+        for the rest, so history older than the raw-result retention is included."""
         ...
 
     def alert_candidates(self, now: datetime) -> list[AlertCandidate]:

@@ -1,0 +1,100 @@
+/* ── Reports page ─────────────────────────────────────────────────────── */
+
+.rpt-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.rpt-controls__to,
+.rpt-controls__busy {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
+.rpt-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.rpt-tabs__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: none;
+  color: var(--ink-dim);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.rpt-tabs__tab:hover { color: var(--ink); }
+.rpt-tabs__tab.is-active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+.rpt-tabs__tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.rpt-tabs__count {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--line);
+  color: var(--ink-dim);
+}
+
+.rpt-name {
+  display: block;
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: none;
+}
+a.rpt-name:hover { color: var(--accent); }
+.rpt-sub {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* One cell per day/week/month, coloured like the uptime figures. */
+.rpt-strip {
+  display: flex;
+  gap: 2px;
+  min-width: 120px;
+}
+.rpt-strip__cell {
+  flex: 1 1 0;
+  min-width: 3px;
+  max-width: 14px;
+  height: 18px;
+  border-radius: 2px;
+  background: var(--line);
+}
+.rpt-strip__cell--good { background: var(--ok); }
+.rpt-strip__cell--fair { background: var(--warn); }
+.rpt-strip__cell--poor { background: var(--expired); }
+
+.rpt-footnote {
+  margin: 14px 2px 0;
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
+@media (max-width: 720px) {
+  .rpt-controls .select { flex: 1 1 140px; }
+  .rpt-tabs { overflow-x: auto; }
+}

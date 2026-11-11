@@ -24,6 +24,7 @@ export default defineConfig({
       "/alerts":      DEV_API,
       "/alert-rules": DEV_API,
       "/settings":    DEV_API,
+      "/reports":     DEV_API,
     },
   },
   define: {

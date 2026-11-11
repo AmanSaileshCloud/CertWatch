@@ -45,6 +45,7 @@ from ..ssl_monitor.handlers._deps import (
     make_engine,
     make_uptime_repo,
 )
+from ..ssl_monitor.services.alert_config_cache import AlertConfigCache, BuiltFor
 from ..ssl_monitor.services.uptime_alerts import (
     AlertBackoff,
     AlertSummary,
@@ -118,19 +119,23 @@ def _print_summary(summary: CycleSummary, alerts: AlertSummary | None) -> None:
 def make_alert_dispatch(settings: Settings, repo: UptimeRepoPort) -> AlertDispatch:
     """Dispatch bound to this process's stores and backoff memory.
 
-    The alert/email configuration (Settings page → env → default) is re-read on every
-    run, so recipients or SES credentials changed in the UI apply without a restart.
-    Building it touches no database, so the worker starts even while Postgres is down.
+    The alert/email configuration (Settings page → env → default) is re-read at most
+    every 30 s, so recipients or SES credentials changed in the UI apply within half
+    a minute, without a restart. The notifier (and its AWS client) is rebuilt only
+    when that configuration actually changes. Building the dispatch touches no
+    database, so the worker starts even while Postgres is down.
     """
     catalog = make_catalog_repo(settings)
     backoff = AlertBackoff()
+    configs = AlertConfigCache()
+    notifiers = BuiltFor(lambda config: make_email_notifier(config, settings))
 
     def dispatch(*, now: datetime) -> AlertSummary:
-        config = make_alert_config(settings)
+        config = configs.get(lambda: make_alert_config(settings))
         if not default_recipients(config) and backoff.first_warning("no-default-recipients"):
             logger.warning("No default alert recipients (Settings page or ALERT_EMAIL / "
                            "ALERT_RECIPIENTS): uptime alerts go only to alert-rule recipients")
-        notifier = make_email_notifier(config, settings)
+        notifier = notifiers.get(config)
         return dispatch_alerts(repo, catalog, notifier, now=now, settings_like=config,
                                backoff=backoff)
 

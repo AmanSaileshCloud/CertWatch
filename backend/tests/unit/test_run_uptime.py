@@ -310,7 +310,7 @@ def test_slow_alert_sending_never_delays_the_checks(monkeypatch):
     assert len(dispatches) == 1
 
 
-def test_alert_dispatch_rereads_settings_and_reuses_one_backoff(monkeypatch):
+def test_alert_dispatch_caches_settings_and_reuses_one_backoff_and_notifier(monkeypatch):
     monkeypatch.setattr(_deps, "_MEMORY_CATALOG_REPO", None)
     settings = Settings.from_env({"STORAGE": "memory"})
     configs, backoffs = [], []
@@ -322,11 +322,16 @@ def test_alert_dispatch_rereads_settings_and_reuses_one_backoff(monkeypatch):
         return AlertSummary(sent=0, failed=0)
 
     monkeypatch.setattr(run_uptime, "dispatch_alerts", fake_dispatch)
+    notifiers = []
+    monkeypatch.setattr(run_uptime, "make_email_notifier",
+                        lambda config, s: notifiers.append(config) or object())
     dispatch = run_uptime.make_alert_dispatch(settings, MemoryUptimeRepo())
+    assert configs == []  # nothing read at start-up
     dispatch(now=datetime.now(timezone.utc))
     dispatch(now=datetime.now(timezone.utc))
 
-    assert len(configs) == 2  # one fresh read per dispatch, none at start-up
+    assert len(configs) == 1  # the second tick reuses the settings read 10 s earlier
+    assert len(notifiers) == 1  # and the notifier built from them
     assert backoffs[0] is backoffs[1] and isinstance(backoffs[0], AlertBackoff)
 
 

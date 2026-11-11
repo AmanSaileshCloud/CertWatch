@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
 from contextlib import AbstractContextManager
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import (
     ARRAY,
+    Date,
     DateTime,
     Engine,
     Integer,
@@ -20,6 +21,7 @@ from sqlalchemy import (
     func,
     insert,
     literal,
+    or_,
     select,
     update,
 )
@@ -37,7 +39,8 @@ from ...core.uptime_models import (
     MonitorType,
 )
 from ...core.incident_rules import evaluate_in_order
-from ..db.tables import check_results, incidents, monitors
+from ...core.reports import STATS_UNIT, CheckStats
+from ..db.tables import check_results, check_results_hourly, incidents, monitors
 from .base import IncidentRules
 from .uptime_alerts_postgres import (
     INCIDENT_PREFIX,
@@ -286,6 +289,38 @@ class PostgresUptimeRepo:
         with self._engine.connect() as conn:
             return {monitor_id: (total, up) for monitor_id, total, up in conn.execute(stmt)}
 
+    def incidents_between(self, start: datetime, end: datetime) -> list[Incident]:
+        stmt = (
+            select(incidents)
+            .where(incidents.c.started_at < end,
+                   or_(incidents.c.resolved_at.is_(None), incidents.c.resolved_at > start))
+            .order_by(incidents.c.started_at, incidents.c.id)
+        )
+        with self._engine.connect() as conn:
+            return [_row_to_incident(row) for row in conn.execute(stmt)]
+
+    def check_stats(
+        self, start: datetime, end: datetime, *, tz: str, unit: str
+    ) -> dict[tuple[int, date], CheckStats]:
+        """Hourly summaries before the first unsummarised hour, raw results after it.
+        An hour is assigned to a period by its start, so with a +05:30 zone an hour
+        that straddles midnight counts towards the day it began in (averages only;
+        uptime % comes from incidents and is exact)."""
+        if unit not in STATS_UNIT.values():
+            raise ValueError(f"unknown unit {unit!r}")
+        with self._engine.connect() as conn:
+            last_hour = conn.execute(select(func.max(check_results_hourly.c.hour_start))).scalar()
+            boundary = last_hour + timedelta(hours=1) if last_hour else start
+            boundary = min(max(boundary, start), end)
+            stats: dict[tuple[int, date], CheckStats] = {}
+            for monitor_id, day, checks, up, ms_sum, ms_count in conn.execute(
+                    _hourly_stats(start, boundary, tz, unit)):
+                stats[(monitor_id, day)] = CheckStats(checks, up, float(ms_sum or 0), ms_count)
+            for monitor_id, day, checks, up, ms_sum, ms_count in conn.execute(
+                    _raw_stats(boundary, end, tz, unit)):
+                stats[(monitor_id, day)] = stats.get((monitor_id, day), CheckStats()) +                     CheckStats(checks, up, float(ms_sum or 0), ms_count)
+        return stats
+
     def alert_candidates(self, now: datetime) -> list[AlertCandidate]:
         with self._engine.connect() as conn:
             return [_row_to_candidate(row) for row in conn.execute(alert_candidates_query(now))]
@@ -299,6 +334,35 @@ class PostgresUptimeRepo:
 
     def alert_dispatch_lock(self) -> AbstractContextManager[bool]:
         return alert_dispatch_lock(self._engine)
+
+
+def _local_bucket(column, tz: str, unit: str):
+    """The local calendar start (date) of ``column``'s day/week/month in ``tz``."""
+    return cast(func.date_trunc(unit, func.timezone(tz, column)), Date)
+
+
+def _hourly_stats(start: datetime, end: datetime, tz: str, unit: str):
+    h = check_results_hourly.c
+    bucket = _local_bucket(h.hour_start, tz, unit)
+    timed = h.avg_response_ms.isnot(None)
+    return (
+        select(h.monitor_id, bucket, func.sum(h.total_checks), func.sum(h.up_checks),
+               func.sum(h.avg_response_ms * h.total_checks).filter(timed),
+               func.coalesce(func.sum(h.total_checks).filter(timed), 0))
+        .where(h.hour_start >= start, h.hour_start < end)
+        .group_by(h.monitor_id, bucket)
+    )
+
+
+def _raw_stats(start: datetime, end: datetime, tz: str, unit: str):
+    r = check_results.c
+    bucket = _local_bucket(r.checked_at, tz, unit)
+    return (
+        select(r.monitor_id, bucket, func.count(), func.count().filter(r.is_up),
+               func.sum(r.response_ms), func.count(r.response_ms))
+        .where(r.checked_at >= start, r.checked_at < end)
+        .group_by(r.monitor_id, bucket)
+    )
 
 
 def _advance_next_check(now: datetime, ids: list[int]):

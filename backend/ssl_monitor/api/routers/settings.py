@@ -11,6 +11,7 @@ from ...auth.models import User
 from ...config.settings import Settings
 from ...core.app_settings_models import AlertConfig
 from ...handlers._deps import delivery_method
+from ...services.alert_config_cache import AlertConfigCache
 from ...services.app_settings import (
     EmailNotDelivered,
     describe_alert_settings,
@@ -19,6 +20,7 @@ from ...services.app_settings import (
 )
 from ..dependencies import (
     get_alert_config,
+    get_alert_config_cache,
     get_alert_notifier,
     get_app_settings,
     get_secret_box,
@@ -48,9 +50,11 @@ def put_alert_settings(
     settings: Settings = Depends(get_app_settings),
     store: SettingsStorePort = Depends(get_settings_store),
     box: SecretBox | None = Depends(get_secret_box),
+    cache: AlertConfigCache = Depends(get_alert_config_cache),
 ) -> AlertSettingsAdminOut:
     changes = body.model_dump(mode="json", exclude_unset=True)
     view = update_alert_settings(store, settings, box, changes, user=admin.username, now=utc_now())
+    cache.invalidate()  # this process shows the new values at once (others within 30 s)
     return AlertSettingsAdminOut(**view)
 
 

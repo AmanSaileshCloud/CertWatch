@@ -39,6 +39,7 @@ from ..handlers._deps import (
     make_storage,
     make_uptime_repo,
 )
+from ..services.alert_config_cache import AlertConfigCache
 from ..services.app_settings import load_alert_config
 from ..services.checker import ProbeFn
 
@@ -98,6 +99,25 @@ def get_alert_config(
 ) -> AlertConfig:
     """The effective alert/email configuration (Settings page → env → default)."""
     return load_alert_config(store, settings, box)
+
+
+_ALERT_CONFIG_CACHE = AlertConfigCache()
+
+
+def get_alert_config_cache() -> AlertConfigCache:
+    """Process-wide cache of the alert configuration (cleared when it is saved)."""
+    return _ALERT_CONFIG_CACHE
+
+
+def get_cached_alert_config(
+    settings: Settings = Depends(get_app_settings),
+    store: SettingsStorePort = Depends(get_settings_store),
+    box: SecretBox | None = Depends(get_secret_box),
+    cache: AlertConfigCache = Depends(get_alert_config_cache),
+) -> AlertConfig:
+    """Like ``get_alert_config`` but kept for up to 30 s, for hot read-only paths
+    (monitor lists). The Settings page and test emails read it fresh instead."""
+    return cache.get(lambda: load_alert_config(store, settings, box), source=store)
 
 
 def get_alert_notifier(

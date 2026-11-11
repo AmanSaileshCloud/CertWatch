@@ -1,249 +1,217 @@
-# CERTWATCH — SSL Certificate Expiry Dashboard
+# CERTWATCH: SSL certificate and website uptime monitoring
 
-Monitor TLS certificate expiry across a fleet of domains. Add domains, a checker
-probes each cert's `notAfter` over TLS around the clock, and you get alerts as
-certs approach configurable thresholds (default **30 / 14 / 7 / 1** days).
+CertWatch watches two things for every customer:
 
-**Single self-contained server.** React SPA + FastAPI + SQLite on one box, with
-AWS SES/SNS used only for alert delivery. No Lambda, no DynamoDB, no Docker.
+1. **SSL certificates.** It checks when each certificate expires and alerts at 30 / 14 / 7 / 1 days. Private hosts can be checked through AWS SSM.
+2. **Website uptime.** It checks each website every 1, 5 or 10 minutes. After 3 failed checks in a row it records an outage (an *incident*). It emails when a site goes DOWN, sends optional reminders, and emails again when the site RECOVERS.
+
+Websites are organised **Customer → Group → websites**. Reports show uptime % per website and per customer, list every outage, and export to CSV.
+
+It runs on **one server**: a React frontend, a FastAPI backend, two background checkers and PostgreSQL. Alerts go out through **Amazon SES** (and SNS for SSL alerts).
 
 ```
-                     ┌──────────────── one server (EC2 t2.micro) ─────────────────┐
- Browser ──HTTP──►   │  Nginx ──► React SPA (static build)                         │
-                     │    └── /auth /domains /checks /admin ──► FastAPI (uvicorn)   │
-                     │                                              │               │
-                     │            pure core: probe → status → threshold             │
-                     │                                              ▼               │
-                     │                                       SQLite (one file)      │
-                     │  checker-loop (24×7) ── run_checker ── TLS probe ──► SES/SNS  │
-                     └─────────────────────────────────────────────────────────────┘
+                ┌───────────────────────── one EC2 server ──────────────────────────┐
+ Browser ─────► │ Nginx ──► React SPA (static)                                      │
+   HTTPS        │   └─ API routes ──► FastAPI (uvicorn) ──┐                         │
+                │                                         ▼                         │
+                │ certwatch-checker-loop (SSL, 24x7) ──► PostgreSQL ◄── rollup/backup│
+                │ certwatch-uptime (websites, 24x7)  ──┘      timers                 │
+                └──────────────────────────────┬────────────────────────────────────┘
+                                               ▼
+                                  Amazon SES / SNS (alert emails)
 ```
 
 ---
 
 ## Features
 
-- **Live cert monitoring** — status (ok / warning / expired / unreachable), days
-  remaining, expiry date, per-domain last-checked/last-error.
-- **24×7 checker** — probes all domains continuously (see the runner below).
-- **Private-domain monitoring** — optionally probes private hosts through AWS SSM
-  Run Command on an SSM-managed instance.
-- **Add / bulk-import / delete** domains, search + status filters, CSV/JSON export.
-- **Alerts** — per-threshold, de-duplicated, to the global recipient via SES/SNS.
-- **Downloadable PDF status report** (admin) + per-domain **test alert**.
-- **Auth** — username/password JWT with an in-app **Users** admin panel (roles).
-- **Dark / light / auto** theme, health-ring overview, 7-day forecast.
+**Websites (uptime)**
+- Add, edit, pause and delete monitors. Each has a URL, a check interval, a timeout, an expected HTTP status and an optional keyword that must appear on the page.
+- Checks run in parallel with async `httpx`. Requests to private or internal addresses are blocked (SSRF guard) unless allowed.
+- A site is DOWN only after 3 failures in a row, which filters out short blips. Each incident records its start, end, duration and reason.
+- Alert emails go out on DOWN and RECOVERED, with optional reminders every N minutes and an optional delay. There's one alert per incident, delivered at least once.
+- Extra recipients can be added per customer or per website (alert rules).
+- The dashboard shows UP/DOWN/PAUSED, last response time and 24-hour uptime. Each website has a detail page with a response-time chart, recent checks and incident history.
+- **Reports** (Reports page or `/reports`):
+  - uptime % per website and per customer, by day, week, month or the whole range, in IST;
+  - a downtime log;
+  - CSV export.
+
+**SSL certificates**
+- Status (ok / warning / expired / unreachable), days remaining and expiry date.
+- Bulk import, search and filters, CSV/JSON export, a PDF status report and a test alert.
+- Threshold alerts are de-duplicated. An unreachable host never triggers a false "expiring" alert.
+
+**Admin**
+- Username/password login (JWT) with `admin` and `user` roles, managed in the Users panel.
+- A **Settings** page: default alert recipients, reminder and delay timing, and SES delivery (IAM role, or SES SMTP with the password stored encrypted).
+
+**Operations**
+- An hourly job summarises check results and deletes raw results older than 30 days.
+- A nightly database backup, optionally copied to S3.
+- `/health/ready` shows whether the database and the uptime worker are healthy. An AWS alarm watches it (see DEPLOY.md).
 
 ---
 
-## Prerequisites
+## Local development
 
-- **Python 3.12+**
-- **Node 18+** (for the frontend)
+**You need:** Python 3.12+, Node 20+, and Docker (for PostgreSQL).
 
----
-
-## Quick start (local dev)
-
-### 1. Backend
 ```powershell
+# 1. Settings: copy the template and fill in POSTGRES_PASSWORD, AUTH_SECRET,
+#    AUTH_BOOTSTRAP_PASSWORD and SETTINGS_ENCRYPTION_KEY (the file explains each).
+copy .env.example .env
+
+# 2. Database (PostgreSQL 17 in Docker; also creates the certwatch_test database)
+docker compose up -d
+
+# 3. Backend
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1           # Windows PowerShell
-# source .venv/bin/activate            # macOS/Linux
+.\.venv\Scripts\Activate.ps1            # macOS/Linux: source .venv/bin/activate
 pip install -e ".[dev]"
-```
-
-The repo ships a local `.env` (in-memory store, console notifier, auth on with a
-dev secret). Run the API:
-```powershell
+alembic upgrade head                    # create / update the tables
 python -m uvicorn backend.ssl_monitor.api.app:app --reload --port 8000
-```
-- API: http://localhost:8000 · interactive docs: http://localhost:8000/docs
 
-### 2. Frontend (new terminal)
-```powershell
+# 4. Background workers (each in its own terminal; both optional for UI work)
+python -m backend.runner.run_uptime                     # website checks + alert emails
+python -m backend.runner.run_checker --interval 300     # SSL certificate checks
+
+# 5. Frontend
 cd frontend
 npm install
 npm run dev
 ```
-- Dashboard: http://localhost:5173 (proxies API calls to `:8000`, so no CORS)
 
-Log in with **admin / admin123** (seeded on first run from
-`AUTH_BOOTSTRAP_PASSWORD`), then add a domain (e.g. `google.com`).
+- Dashboard: http://localhost:5173. It forwards API calls to `:8000`; the forwarded paths are listed in `frontend/vite.config.ts`.
+- API docs: http://localhost:8000/docs
+- Log in as **admin** with your `AUTH_BOOTSTRAP_PASSWORD`.
 
-### 3. Populate status — run the checker
-There's no manual "check" button; a domain shows `unreachable` until the checker
-probes it. Locally, run it from the CLI:
+With `NOTIFIER=console` (the default), alert emails are printed in the worker's log instead of being sent.
+
+**Handy one-off commands:**
 ```powershell
-python -m backend.runner.run_checker --once           # one pass over stored domains
-python -m backend.runner.run_checker --interval 300    # re-check every 5 min (24×7 mode)
-
-# ad-hoc probe (no storage, no auth) — just log the result of a host:
-python -m backend.runner.run_checker --check google.com --check expired.badssl.com
+python -m backend.runner.run_uptime --check https://example.com   # probe a URL, save nothing
+python -m backend.runner.run_uptime --once                        # one check cycle
+python -m backend.runner.run_checker --check google.com           # probe a certificate
+python -m backend.runner.run_rollup                               # hourly summary + cleanup now
+python -m backend.scripts.migrate_sqlite_to_postgres --sqlite certwatch.db --dry-run
 ```
-On a deployed server this runs continuously as the `certwatch-checker-loop`
-systemd service (see DEPLOY.md).
 
----
-
-## Auth & users
-
-- Login issues a JWT (HS256, signed with `AUTH_SECRET`) held in `localStorage`.
-- The first run seeds an **admin** account; passwords are PBKDF2-hashed in
-  `auth_users.json` (git-ignored).
-- Admins manage accounts from the **Users** panel (or `/admin/users`); roles are
-  `admin` (full) and `user` (view/monitor, no user/digest management).
-- For pure local hacking you can set `AUTH_ENABLED=false` — every request is then
-  treated as an anonymous admin (no login screen).
-
----
-
-## Configuration (`.env`)
-
-| Var | Default | Meaning |
-|-----|---------|---------|
-| `STORAGE` | `sqlite` | `sqlite` (default) or `memory` (non-persistent dev) |
-| `SQLITE_PATH` | `certwatch.db` | SQLite DB file path |
-| `AUTH_ENABLED` | `true` | `false` = no login gate (every request is admin) |
-| `AUTH_SECRET` | _(insecure default)_ | JWT signing secret — **must** be a real value when auth is on |
-| `AUTH_TOKEN_EXPIRE_MINUTES` | `720` | token lifetime |
-| `AUTH_USERS_FILE` | `auth_users.json` | user store path |
-| `AUTH_BOOTSTRAP_PASSWORD` | `admin123` | seeds the `admin` account on first run |
-| `NOTIFIER` | `console` | `console` (log) or `sns_ses` (AWS alerts) |
-| `ALERT_EMAIL` | — | SES sender/recipient (for `sns_ses`) |
-| `SNS_TOPIC_ARN` | — | SNS topic ARN (for `sns_ses`) |
-| `AWS_REGION` | `us-east-1` | region for SES/SNS |
-| `THRESHOLD_DAYS` | `30,14,7,1` | alert thresholds (days) |
-| `TLS_TIMEOUT_SECONDS` | `5` | per-host connect timeout |
-| `AGENT_STALE_AFTER_HOURS` | `6` | legacy setting; unused by direct SSM checks |
-| `AGENT_TRANSPORT` | `ssm` | direct SSM command execution from the central checker |
-| `SSM_DOCUMENT_NAME` | `AWS-RunShellScript` | SSM document used for private probes |
-| `SSM_POLL_INTERVAL_SECONDS` | `2` | seconds between SSM command status checks |
-
-> **Startup guard.** With `AUTH_ENABLED=true` the API **refuses to start** if
-> `AUTH_SECRET` is empty, is the built-in default, is shorter than 32 characters,
-> or still contains template placeholder text (`CHANGE_ME`, `your-secret`, …) —
-> and likewise if `AUTH_BOOTSTRAP_PASSWORD` is still a placeholder. Anyone
-> holding the signing key can forge an admin token, so a copied-but-unedited env
-> file fails loudly instead of serving wide open.
->
-> `deploy/setup.sh` generates a real `AUTH_SECRET` and admin password for you on
-> first run and prints the password once, so this guard should never fire on a
-> scripted deploy. Generate one by hand with `openssl rand -hex 32`.
+**Changing the database:** add a migration in `backend/migrations/versions/` (next number, `down_revision` = previous), update `backend/ssl_monitor/adapters/db/tables.py` to match, then run `alembic upgrade head`.
 
 ---
 
 ## Tests
 
 ```powershell
-pytest backend/tests -q          # full suite — no Docker, no network, all runs
-cd frontend; npm run build       # frontend type-check + production build
+pytest -q                          # backend: unit + PostgreSQL integration tests
+cd frontend; npx tsc --noEmit      # frontend type check
+npm run build                      # production build
 ```
 
-**What's covered**
-- **Pure logic:** threshold/alert decision (idempotency, escalation, renewal
-  reset), status classification boundaries, cert parsing for
-  valid/expiring/expired/self-signed, and connection failures that must report
-  **unreachable — never a false "expiring"**.
-- **Adapters:** SQLite round-trip, in-memory store, console notifier, config parsing.
-- **API (TestClient):** auth, user management, domain CRUD + validation (409/422),
-  the full **add → check → alert → idempotency** flow against real SQLite.
+The PostgreSQL tests run against `TEST_DATABASE_URL` (the `certwatch_test` database that docker compose creates). They're **skipped** if it isn't set, so the unit tests still run without Docker.
+
+**What's covered:**
+- the pure rules: certificate thresholds, incident rules, alert timing, uptime %, report periods in IST, rollup windows, health checks;
+- every API route, including auth and roles;
+- both stores (in-memory and PostgreSQL), including concurrency;
+- the migrations;
+- the deploy files: every API route must be forwarded by `deploy/nginx.conf` and `vite.config.ts`, and every systemd unit must be installed by the scripts.
+
+---
+
+## Configuration
+
+Everything is set with environment variables, read from `.env` locally or `/etc/certwatch/certwatch.env` on the server. No secrets are kept in code. The main ones:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DATABASE_URL` | — | PostgreSQL connection, e.g. `postgresql://certwatch:…@localhost:5432/certwatch` |
+| `STORAGE` | `postgres` | `postgres`, or `memory` (temporary, for experiments) |
+| `AUTH_SECRET` | — | JWT signing key, 32+ random characters (`openssl rand -hex 32`) |
+| `AUTH_BOOTSTRAP_PASSWORD` | — | password of the `admin` account created on first run |
+| `AUTH_USERS_FILE` | `auth_users.json` | where user accounts are stored |
+| `SETTINGS_ENCRYPTION_KEY` | — | Fernet key that encrypts the SMTP password saved on the Settings page |
+| `NOTIFIER` | `console` | `console` (log only) or `sns_ses` (real emails) |
+| `ALERT_EMAIL` / `ALERT_RECIPIENTS` | — | SES sender and default recipients (the Settings page can override them) |
+| `AWS_REGION` | `us-east-1` | region for SES/SNS (`ap-south-1` in production) |
+| `SNS_TOPIC_ARN` | — | SNS topic for SSL alerts |
+| `THRESHOLD_DAYS` | `30,14,7,1` | SSL alert thresholds |
+| `UPTIME_TICK_SECONDS` | `10` | how often the uptime worker looks for due checks |
+| `UPTIME_MAX_CONCURRENCY` | `50` | sites checked at the same time |
+| `UPTIME_FAILURE_THRESHOLD` / `UPTIME_RECOVERY_THRESHOLD` | `3` / `1` | failures before DOWN, successes before UP |
+| `UPTIME_REMINDER_MINUTES` / `UPTIME_ALERT_DELAY_MINUTES` | `30` / `0` | default alert timing |
+| `UPTIME_ALLOW_PRIVATE_TARGETS` | `false` | allow monitoring internal addresses |
+| `UPTIME_RAW_RETENTION_DAYS` | `30` | raw check results kept; hourly summaries are kept forever |
+| `REPORT_TIMEZONE` | `Asia/Kolkata` | time zone of report days, weeks and months |
+| `CERTWATCH_PUBLIC_URL` | — | dashboard address used in email links |
+| `BACKUP_S3_BUCKET` / `BACKUP_KEEP_LOCAL` | — / `7` | nightly backup copy to S3, and local copies kept |
+
+`.env.example` (local) and `deploy/certwatch.env.example` (server) list every setting with an explanation.
+
+> **Startup guard.** With `AUTH_ENABLED=true`, the API **refuses to start** if `AUTH_SECRET` is empty, too short, or still placeholder text such as `CHANGE_ME`. The same applies if `AUTH_BOOTSTRAP_PASSWORD` is a placeholder. On a server, `deploy/setup.sh` generates real values.
 
 ---
 
 ## Deployment
 
-Single EC2 t2.micro, fully scripted. See **[DEPLOY.md](DEPLOY.md)** — `deploy/setup.sh`
-provisions swap, a service user, the venv, the frontend build, systemd services
-(API + 24×7 checker), and Nginx. AWS is only needed for SES/SNS alerts.
-
-`setup.sh` leaves the site on **plain HTTP**. Before anyone logs in, enable TLS —
-otherwise the login password and the bearer token cross the network in cleartext:
+See **[DEPLOY.md](DEPLOY.md)**. In short, on a fresh Ubuntu 24.04 EC2 (t3.medium):
 
 ```bash
-sudo bash deploy/setup.sh
-sudo apt-get install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d certwatch.example.com --redirect
+sudo CERTWATCH_DOMAIN=certwatch.example.com CERTBOT_EMAIL=ops@example.com bash deploy/setup.sh
 ```
 
-Certbot converts the site to HTTPS, adds a permanent HTTP→HTTPS redirect, and
-installs its own renewal timer. It needs the domain's DNS pointing at the box and
-ports 80 + 443 open. HSTS and the other security headers ship in
-`deploy/security-headers.conf` and activate automatically once TLS is on. See
-**[DEPLOY.md](DEPLOY.md)** for the full steps.
-
-### Private domains through AWS SSM
-
-Set `AGENT_TRANSPORT=ssm`. Each private-domain record must have its `agent_id`
-set to the target SSM managed-instance ID (`i-...` or `mi-...`). The server IAM role needs
-`ssm:SendCommand` and `ssm:GetCommandInvocation`; the managed instance needs
-SSM Agent, `AmazonSSMManagedInstanceCore`, and outbound access to Systems Manager.
-The checker runs the TLS probe inside that instance, using its private DNS and
-network routes. No CertWatch agent process or `/agent/report` endpoint is used.
+This installs PostgreSQL, generates every secret, applies the migrations, starts all services and timers, and turns on HTTPS. Use `sudo bash deploy/update.sh` for later releases: it backs up first, then migrates and restarts.
 
 ---
 
-## Repo structure
+## Repository layout
 
 ```
 backend/
   ssl_monitor/
-    core/        # PURE: cert_probe, status, thresholds, models (no I/O)
-    adapters/
-      storage/   # StoragePort + sqlite + memory
-      notifier/  # NotifierPort + console + sns_ses  (alerts)
-    services/    # checker + domains + digest renderer (adapter-agnostic)
-    handlers/    # _deps wiring (config → adapters) + checker entry
-    auth/        # JWT security + JSON user store + models
-    api/         # FastAPI app, schemas, dependencies
-    config/      # Settings (env → typed config)
-  runner/        # run_checker CLI — the 24×7 checker loop
-  scripts/       # bootstrap (SES topic + SES sender verification)
-  tests/         # unit/ + integration/ (SQLite, no external services)
-frontend/        # React + Vite + TypeScript dashboard
-deploy/          # systemd units, nginx.conf + security headers, setup.sh,
-                 #   update.sh, env example
-DEPLOY.md        # single-server deployment guide
+    core/       PURE rules, no I/O: cert/uptime probes' judgement, incident rules,
+                alert policy, report maths, rollup windows, health
+    adapters/   the outside world: db/ (tables, engine), storage/ (PostgreSQL +
+                in-memory), notifier/ (console, SES API, SES SMTP), secret box, SSM
+    services/   use cases that combine rules and adapters (checker, monitors,
+                alerts, reports, CSV, settings, rollup)
+    api/        FastAPI app, routers/ (one file per area), schemas, dependencies
+    auth/       JWT, password hashing, user store, login rate limit
+    config/     Settings: environment variables → typed config
+    handlers/   _deps.py: the one place that picks concrete adapters
+  runner/       background processes: run_uptime, run_checker, run_rollup
+  migrations/   Alembic database migrations (0001…)
+  scripts/      bootstrap (SNS/SES), SQLite → PostgreSQL copy
+  tests/        unit/ and integration/ (PostgreSQL)
+frontend/       React + Vite + TypeScript dashboard
+deploy/         setup.sh, update.sh, backup.sh, lib.sh, systemd units and timers,
+                nginx.conf, security headers, production env template
+DEPLOY.md       production deployment and operations guide
 ```
 
-### API surface
-| Method | Path | Purpose |
-|--------|------|---------|
-| `POST` | `/auth/login` | username/password → JWT |
-| `GET` | `/auth/me` | current user (identity + role) |
-| `GET/POST/DELETE` | `/admin/users[/{username}]` | manage users (admin only) |
-| `GET` | `/domains` | list monitored domains |
-| `POST` | `/domains` | add `{ "domain": "example.com", "port": 443 }` |
-| `PATCH` | `/domains/{domain}` | update notify emails / alerts toggle |
-| `DELETE` | `/domains/{domain}` | stop monitoring (idempotent) |
-| `POST` | `/domains/bulk` | add many at once |
-| `POST` | `/domains/{domain}/test-alert` | send a test alert |
-| `POST` | `/checks/run` | run the checker over all stored domains |
-| `GET` | `/checks/digest` | download a PDF status report (admin only) |
-| `GET` | `/health` | liveness |
+### API overview
+
+Interactive docs are at `/docs`. Every route except `/auth/login` and `/health*` needs a login.
+
+| Area | Routes |
+|---|---|
+| Auth & users | `POST /auth/login`, `GET /auth/me`, `POST /auth/change-password`, `/admin/users` (admin) |
+| SSL | `/domains` (CRUD, `/bulk`, `/{domain}/cert`, `/{domain}/test-alert`), `POST /checks/run`, `GET /checks/digest` (PDF) |
+| Customers & groups | `/customers`, `/groups`, `/groups/{id}/members` |
+| Websites | `/monitors` (CRUD), `/{id}/pause`, `/{id}/resume`, `/{id}/checks`, `/{id}/series`, `/{id}/incidents`, `/{id}/test-alert` |
+| Alerts | `GET /alerts/settings`, `/alert-rules` (global rules are admin-only) |
+| Settings | `GET/PUT /settings/alerts`, `POST /settings/alerts/test-email` (admin) |
+| Reports | `GET /reports/uptime[.csv]`, `GET /reports/downtime[.csv]`. Parameters: `start`, `end`, `granularity`, `customer_id`, `group_id`, `level` |
+| Health | `GET /health` (process up), `GET /health/ready` (database + uptime worker) |
 
 ---
 
 ## Design notes
 
-- **Pure core, injected I/O.** The TLS probe takes an injectable connector and
-  the threshold logic takes plain values (no clock inside) — so every rule is
-  unit-tested deterministically with no network.
-- **Unreachable ≠ expiring.** A down/refused/timed-out host is recorded as
-  `unreachable` with the error preserved; it never produces a false expiry alert
-  and never touches alert-dedup state.
-- **Idempotent alerts.** Each run fires at most one alert — the most urgent
-  crossed threshold — and only when more urgent than the last one sent
-  (`last_alert_threshold`), so the 24×7 loop doesn't re-page you. A renewal resets
-  the dedup state.
-- **Ports & adapters.** Storage and notifier are `Protocol`s;
-  `handlers/_deps.py` is the single seam that turns `Settings` into concrete
-  implementations (SQLite, SES/SNS).
-- **Agents report facts, the server decides.** Domains inside a private network
-  are monitored by an SSM-managed instance that returns only `reachable` + `notAfter`;
-  `days_remaining`, status, and thresholds are computed server-side by the same
-  core functions the direct checker uses, so the two can't disagree. Such rows
-  are marked `source="agent"` and the checker **never probes them** — it can't
-  reach them, and a failed probe would overwrite good data with `unreachable`,
-  which suppresses expiry alerts entirely. A silent agent is alerted on
-  separately, while expiry alerts continue from the last known `notAfter`.
+- **Pure core, injected I/O.** The rules in `core/` take plain values, including "now", so each one is unit-tested without a network, a database or a clock.
+- **Ports and adapters.** Storage and notifiers are `Protocol`s. `handlers/_deps.py` turns settings into concrete adapters, so the tests swap in in-memory versions.
+- **One transaction per check batch.** Results, monitor state and incident open/close are saved together. A partial unique index allows only one open incident per website.
+- **At-least-once alerts.** A DOWN or RECOVERED email is marked sent only after the provider accepts it. Failures back off and retry, and an advisory lock stops two workers sending the same alert.
+- **Unreachable ≠ expiring.** A host that can't be reached is shown as `unreachable` and never triggers a false certificate-expiry alert.
+- **Time-based uptime.** Report uptime is `1 − downtime / monitored time`, counting confirmed outages from the first failed check. That's how SLAs are measured, so report figures can be compared with Site24x7's.
