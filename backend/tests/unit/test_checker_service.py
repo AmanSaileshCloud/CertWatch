@@ -5,8 +5,6 @@ from __future__ import annotations
 
 import datetime as dt
 
-import pytest
-
 from backend.ssl_monitor.adapters.notifier.console import ConsoleNotifier
 from backend.ssl_monitor.adapters.storage.memory import MemoryStorage
 from backend.ssl_monitor.core.models import DomainRecord, ProbeResult, Status

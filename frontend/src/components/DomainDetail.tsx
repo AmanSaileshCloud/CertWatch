@@ -4,6 +4,7 @@ import { api, ApiError } from "../api";
 import type { CertInfo, DomainRecord } from "../types";
 import { StatusBadge } from "./StatusBadge";
 import { useToast } from "./Toast";
+import { GroupPicker } from "./groups/GroupPicker";
 
 type Props = {
   record: DomainRecord;
@@ -23,6 +24,8 @@ export function DomainDetail({ record, onClose, onSaved }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [testingAlert, setTestingAlert] = useState(false);
+  const [groupId, setGroupId] = useState<number | null>(record.group_id ?? null);
+  const [savingGroup, setSavingGroup] = useState(false);
 
   const [cert, setCert] = useState<CertInfo | null>(null);
   const [certState, setCertState] = useState<"loading" | "error" | "done">("loading");
@@ -54,6 +57,22 @@ export function DomainDetail({ record, onClose, onSaved }: Props) {
       toast.show(err instanceof ApiError ? err.message : "Failed to send test alert", "error");
     } finally {
       setTestingAlert(false);
+    }
+  }
+
+  async function changeGroup(next: number | null) {
+    const previous = groupId;
+    setGroupId(next);
+    setSavingGroup(true);
+    try {
+      const updated = await api.updateDomain(record.domain, { group_id: next });
+      toast.show(next === null ? "Removed from group" : "Group updated", "success");
+      onSaved(updated);
+    } catch (err) {
+      setGroupId(previous);
+      toast.show(err instanceof ApiError ? err.message : "Could not change group", "error");
+    } finally {
+      setSavingGroup(false);
     }
   }
 
@@ -133,6 +152,15 @@ export function DomainDetail({ record, onClose, onSaved }: Props) {
             <dt>Added</dt>
             <dd>{fmt(record.created_at)}</dd>
           </dl>
+        </section>
+
+        <section className="drawer__section">
+          <h3>Group</h3>
+          <label className="sr-only" htmlFor="domain-group">Group</label>
+          <GroupPicker id="domain-group" value={groupId} onChange={changeGroup} disabled={savingGroup} />
+          <p className="drawer__hint">
+            {savingGroup ? "Saving…" : "Assign this certificate to a customer group. Changes save immediately."}
+          </p>
         </section>
 
         <section className="drawer__section">

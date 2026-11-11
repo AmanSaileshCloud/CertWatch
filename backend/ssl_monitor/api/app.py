@@ -8,6 +8,8 @@ an API Gateway route so the same surface deploys to Lambda later:
     DELETE /domains/{domain}   -> delete_domain
     POST   /checks/run         -> run_check
 
+Customers, groups and website monitors live in ``routers/``.
+
 CORS is enabled for the Vite dev origin.
 """
 
@@ -29,6 +31,7 @@ from ..auth.users import UserStore
 from ..config.settings import Settings
 from ..core.models import Alert, SOURCE_AGENT, Status
 from ..services.checker import ProbeFn, refresh_status, run_check
+from ..services.catalog import Stores, set_domain_group
 from ..services.digest import render_digest_pdf
 from ..services.domains import (
     DomainExists,
@@ -40,6 +43,7 @@ from ..services.domains import (
     update_domain,
 )
 from ..auth.rate_limit import LoginLimiter
+from .routers import customers, get_stores, groups, install_error_handlers, monitors
 from .dependencies import (
     get_app_settings,
     get_cert_prober,
@@ -128,6 +132,10 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
+install_error_handlers(app)
+for _router in (customers.router, groups.router, monitors.router):
+    app.include_router(_router)
 
 
 @app.get("/health")
@@ -229,10 +237,14 @@ def admin_delete_user(
 
 @app.get("/domains", response_model=list[DomainOut])
 def get_domains(
+    group_id: int | None = None,
     storage: StoragePort = Depends(get_storage),
     _user: User = Depends(get_current_user),
 ) -> list[DomainOut]:
-    return [DomainOut.from_record(r) for r in list_domains(storage)]
+    records = list_domains(storage)
+    if group_id is not None:
+        records = [r for r in records if r.group_id == group_id]
+    return [DomainOut.from_record(r) for r in records]
 
 
 @app.post("/domains", response_model=DomainOut, status_code=status.HTTP_201_CREATED)
@@ -267,9 +279,12 @@ def patch_domain(
     domain: str,
     body: DomainUpdateIn,
     storage: StoragePort = Depends(get_storage),
+    stores: Stores = Depends(get_stores),
     _user: User = Depends(get_current_user),
 ) -> DomainOut:
     try:
+        if "group_id" in body.model_fields_set:  # explicit null = ungroup
+            set_domain_group(stores, domain, body.group_id)
         record = update_domain(
             storage,
             domain,

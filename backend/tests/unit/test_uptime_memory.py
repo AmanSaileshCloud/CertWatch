@@ -12,6 +12,7 @@ from backend.ssl_monitor.adapters.storage.uptime_memory import MemoryUptimeRepo
 from backend.ssl_monitor.core.incident_rules import evaluate
 from backend.ssl_monitor.core.uptime_models import (
     CheckResult,
+    CloseReason,
     Incident,
     IncidentEvent,
     Monitor,
@@ -195,7 +196,8 @@ def test_recovered_closes_open_incident():
 
     closed = _record(repo, [_recovered(added.id, seconds=5)])
 
-    expected = replace(opened, resolved_at=NOW + dt.timedelta(seconds=5), duration_seconds=125)
+    expected = replace(opened, resolved_at=NOW + dt.timedelta(seconds=5), duration_seconds=125,
+                       close_reason=CloseReason.RECOVERED)
     assert closed == [expected]
     assert repo.list_incidents() == [expected]
 
@@ -286,3 +288,164 @@ def test_result_for_paused_monitor_is_dropped():
 
     assert repo.record_checks([failed], evaluate) == []
     assert repo.list_check_results(added.id) == []
+
+
+# ── User changes, listing, deletion and uptime counts ──
+
+
+def test_list_check_results_since_is_inclusive():
+    repo = MemoryUptimeRepo()
+    added = repo.add_monitor(_monitor())
+    _record(repo, [_up(_result(added.id, seconds=s)) for s in (0, 10, 20)])
+
+    listed = repo.list_check_results(added.id, since=NOW + dt.timedelta(seconds=10))
+
+    assert [r.checked_at for r in listed] == [NOW + dt.timedelta(seconds=s) for s in (20, 10)]
+
+
+def test_list_monitors_orders_by_name_then_id():
+    repo = MemoryUptimeRepo()
+    b = repo.add_monitor(_monitor("b"))
+    a_first = repo.add_monitor(_monitor("a"))
+    a_second = repo.add_monitor(_monitor("a"))
+    assert [m.id for m in repo.list_monitors()] == [a_first.id, a_second.id, b.id]
+
+
+def test_change_monitor_applies_values_and_updated_at():
+    repo = MemoryUptimeRepo()
+    added = repo.add_monitor(_monitor())
+    later = NOW + dt.timedelta(hours=1)
+
+    changed = repo.change_monitor(added.id, {"name": "renamed", "interval_seconds": 300,
+                                             "keyword": None, "type": "http",
+                                             "next_check_at": later}, now=later)
+
+    assert (changed.name, changed.interval_seconds, changed.next_check_at,
+            changed.updated_at, changed.type) == ("renamed", 300, later, later, MonitorType.HTTP)
+    assert repo.get_monitor(added.id) == changed
+
+
+@pytest.mark.parametrize("field", ["state", "id", "bogus"])
+def test_change_monitor_rejects_non_editable_fields(field):
+    repo = MemoryUptimeRepo()
+    added = repo.add_monitor(_monitor())
+    with pytest.raises(ValueError, match=field):
+        repo.change_monitor(added.id, {field: 1}, now=NOW)
+    assert repo.get_monitor(added.id) == added
+
+
+def test_change_monitor_missing_returns_none():
+    assert MemoryUptimeRepo().change_monitor(42, {"name": "x"}, now=NOW) is None
+
+
+def test_change_monitor_reset_state():
+    repo = MemoryUptimeRepo()
+    added = repo.add_monitor(_monitor())
+    _record(repo, [_went_down(added.id)])
+
+    changed = repo.change_monitor(added.id, {}, now=NOW, reset_state=True)
+
+    assert (changed.state, changed.consecutive_failures, changed.consecutive_successes,
+            changed.first_failure_at) == (MonitorState.UNKNOWN, 0, 0, None)
+    assert changed.last_error == "HTTP 503"
+
+
+def test_change_monitor_closes_open_incident_with_reason():
+    repo = MemoryUptimeRepo()
+    added = repo.add_monitor(_monitor())
+    [opened] = _record(repo, [_went_down(added.id, started=-120)])
+    at = NOW + dt.timedelta(seconds=30, milliseconds=900)
+
+    changed = repo.change_monitor(added.id, {"is_paused": True}, now=at, reset_state=True,
+                                  close_reason=CloseReason.PAUSED)
+
+    assert changed.is_paused and changed.state is MonitorState.UNKNOWN
+    assert repo.list_incidents(added.id) == [replace(
+        opened, resolved_at=at, duration_seconds=150, close_reason=CloseReason.PAUSED)]
+
+
+def test_change_monitor_close_without_open_incident_is_fine():
+    repo = MemoryUptimeRepo()
+    added = repo.add_monitor(_monitor())
+    changed = repo.change_monitor(added.id, {"url": "https://new.example.com"}, now=NOW,
+                                  close_reason=CloseReason.EDITED)
+    assert changed.url == "https://new.example.com"
+    assert repo.list_incidents() == []
+
+
+def test_results_after_pause_via_change_monitor_are_dropped():
+    repo = MemoryUptimeRepo()
+    added = repo.add_monitor(_monitor())
+    repo.claim_due_monitors(NOW, limit=10)
+    repo.change_monitor(added.id, {"is_paused": True}, now=NOW, reset_state=True,
+                        close_reason=CloseReason.PAUSED)
+
+    assert repo.record_checks([_result(added.id, is_up=False)], evaluate) == []
+    assert repo.list_check_results(added.id) == []
+
+
+def test_delete_monitor_removes_results_and_incidents():
+    repo = MemoryUptimeRepo()
+    gone = repo.add_monitor(_monitor("gone"))
+    kept = repo.add_monitor(_monitor("kept"))
+    _record(repo, [_went_down(gone.id), _up(_result(kept.id))])
+
+    assert repo.delete_monitor(gone.id) is True
+    assert repo.delete_monitor(gone.id) is False
+
+    assert repo.get_monitor(gone.id) is None
+    assert repo.list_incidents() == []
+    assert repo.list_check_results(gone.id) == []
+    assert repo.uptime_counts(NOW) == {kept.id: (1, 1)}
+
+
+def test_uptime_counts_per_monitor_since():
+    repo = MemoryUptimeRepo()
+    a = repo.add_monitor(_monitor("a"))
+    b = repo.add_monitor(_monitor("b"))
+    old = repo.add_monitor(_monitor("old"))
+    _record(repo, [_up(_result(a.id, seconds=0)), _up(_result(a.id, seconds=10)),
+                   _up(_result(a.id, seconds=20, is_up=False)),
+                   _up(_result(b.id, seconds=30, is_up=False)),
+                   _up(_result(a.id, seconds=-60)), _up(_result(old.id, seconds=-60))])
+
+    assert repo.uptime_counts(NOW) == {a.id: (3, 2), b.id: (1, 0)}
+    assert repo.uptime_counts(NOW + dt.timedelta(hours=1)) == {}
+
+
+def test_uptime_counts_only_for_given_monitors():
+    repo = MemoryUptimeRepo()
+    a = repo.add_monitor(_monitor("a"))
+    b = repo.add_monitor(_monitor("b"))
+    _record(repo, [_up(_result(a.id)), _up(_result(b.id, is_up=False))])
+
+    assert repo.uptime_counts(NOW, monitor_ids=[b.id]) == {b.id: (1, 0)}
+    assert repo.uptime_counts(NOW, monitor_ids=[]) == {}
+    assert repo.uptime_counts(NOW, monitor_ids=None) == {a.id: (1, 1), b.id: (1, 0)}
+
+
+def _failed(monitor: Monitor) -> CheckResult:
+    return replace(_result(monitor.id, is_up=False, status_code=503, error="HTTP 503"),
+                   monitor_version=monitor.updated_at)
+
+
+def test_result_for_monitor_edited_during_the_check_is_dropped():
+    repo = MemoryUptimeRepo()
+    added = repo.add_monitor(_monitor())
+    [claimed] = repo.claim_due_monitors(NOW, limit=10)
+    repo.change_monitor(added.id, {"name": "renamed"}, now=NOW + dt.timedelta(seconds=1))
+
+    assert repo.record_checks([_failed(claimed)], evaluate) == []
+    assert repo.list_check_results(added.id) == []
+    assert repo.get_monitor(added.id).consecutive_failures == 0
+
+
+def test_result_with_current_version_is_saved_without_the_version():
+    repo = MemoryUptimeRepo()
+    added = repo.add_monitor(_monitor())
+    [claimed] = repo.claim_due_monitors(NOW, limit=10)
+
+    repo.record_checks([_failed(claimed)], evaluate)
+
+    assert repo.get_monitor(added.id).consecutive_failures == 1
+    assert repo.list_check_results(added.id)[0].monitor_version is None

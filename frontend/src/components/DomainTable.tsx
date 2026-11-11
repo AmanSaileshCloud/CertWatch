@@ -4,6 +4,8 @@ import { StatusBadge } from "./StatusBadge";
 
 type Props = {
   domains: DomainRecord[];
+  /** Group id → group name, for the Group column. */
+  groupNames: Map<number, string>;
   selectedKeys: Set<string>;
   onToggleSelect: (key: string) => void;
   onSelectAll: () => void;
@@ -46,6 +48,7 @@ function DaysCell({ record }: { record: DomainRecord }) {
 
 export function DomainTable({
   domains,
+  groupNames,
   selectedKeys,
   onToggleSelect,
   onSelectAll,
@@ -75,6 +78,7 @@ export function DomainTable({
               />
             </th>
             <th className="col-domain">Domain</th>
+            <th className="col-group">Group</th>
             <th className="col-expiry">Expires</th>
             <th className="col-days">Days left</th>
             <th className="col-status">Status</th>
@@ -114,6 +118,9 @@ export function DomainTable({
                         {d.last_error}
                       </span>
                     )}
+                  </td>
+                  <td className="col-group">
+                    {d.group_id !== null ? groupNames.get(d.group_id) ?? "—" : "—"}
                   </td>
                   <td className="col-expiry">{formatExpiry(d.not_after)}</td>
                   <td className="col-days">

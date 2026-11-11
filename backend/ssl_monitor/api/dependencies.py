@@ -7,19 +7,26 @@ with ``AUTH_SECRET``. Tests override these via ``app.dependency_overrides``.
 from __future__ import annotations
 
 import logging
+import socket
 from functools import lru_cache
 
 from fastapi import Depends, Header, HTTPException, status
 
 from ..adapters.notifier.base import NotifierPort
-from ..adapters.storage.base import StoragePort
+from ..adapters.storage.base import CatalogRepoPort, StoragePort, UptimeRepoPort
 from ..auth.models import User
 from ..auth.rate_limit import LoginLimiter
 from ..auth.security import decode_access_token
 from ..auth.users import UserStore
 from ..config.settings import Settings
 from ..core.cert_probe import probe_cert, probe_cert_info
-from ..handlers._deps import get_settings, make_notifier, make_storage
+from ..handlers._deps import (
+    get_settings,
+    make_catalog_repo,
+    make_notifier,
+    make_storage,
+    make_uptime_repo,
+)
 from ..services.checker import ProbeFn
 
 logger = logging.getLogger("ssl_monitor.auth")
@@ -37,6 +44,23 @@ def get_storage() -> StoragePort:
     """Process-wide storage. Cached so the adapter (and its schema init /
     connection setup) is built once, not rebuilt on every request."""
     return make_storage()
+
+
+@lru_cache(maxsize=1)
+def get_uptime_repo() -> UptimeRepoPort:
+    """Process-wide website-monitor repository."""
+    return make_uptime_repo()
+
+
+@lru_cache(maxsize=1)
+def get_catalog_repo() -> CatalogRepoPort:
+    """Process-wide customers/groups repository."""
+    return make_catalog_repo()
+
+
+def get_dns_resolver():
+    """DNS lookup used by the monitor-URL safety check (overridable in tests)."""
+    return socket.getaddrinfo
 
 
 def get_notifier() -> NotifierPort:

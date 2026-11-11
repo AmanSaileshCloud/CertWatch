@@ -29,6 +29,8 @@ class DomainOut(BaseModel):
     alerts_enabled: bool
     source: str
     agent_id: str | None
+    customer_id: int | None = None
+    group_id: int | None = None
 
     @classmethod
     def from_record(cls, r: DomainRecord) -> "DomainOut":
@@ -46,11 +48,16 @@ class DomainOut(BaseModel):
             alerts_enabled=r.alerts_enabled,
             source=r.source,
             agent_id=r.agent_id,
+            customer_id=r.customer_id,
+            group_id=r.group_id,
         )
 
 
 class DomainUpdateIn(BaseModel):
     alerts_enabled: bool | None = None
+    # int = move into that group (takes its customer); explicit null = ungroup.
+    # Absent leaves the group unchanged (see model_fields_set).
+    group_id: int | None = None
 
 
 class CheckSummary(BaseModel):

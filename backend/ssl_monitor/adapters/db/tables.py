@@ -32,6 +32,7 @@ from ...core.uptime_models import (
     MAX_TIMEOUT_SECONDS,
     MIN_TIMEOUT_SECONDS,
     AlertChannel,
+    CloseReason,
     MonitorState,
     MonitorType,
 )
@@ -174,6 +175,11 @@ incidents = Table(
     Column("reason", Text),
     Column("down_alert_sent_at", _tz()),
     Column("recovery_alert_sent_at", _tz()),
+    Column("close_reason", Text),
+    CheckConstraint(
+        "close_reason IS NULL OR " + _in_list("close_reason", [r.value for r in CloseReason]),
+        name="ck_incidents_close_reason",
+    ),
     Index("ix_incidents_monitor_started", "monitor_id", "started_at"),
     Index("ix_incidents_started", "started_at"),
     Index("ux_incidents_one_open_per_monitor", "monitor_id", unique=True,

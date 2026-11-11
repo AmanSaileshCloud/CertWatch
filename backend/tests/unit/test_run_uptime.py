@@ -10,6 +10,7 @@ import pytest
 from backend.runner import run_uptime
 from backend.ssl_monitor.adapters.storage.uptime_memory import MemoryUptimeRepo
 from backend.ssl_monitor.config.settings import Settings
+from backend.ssl_monitor.core.http_probe import GuardedTransport
 from backend.ssl_monitor.core.uptime_models import CheckResult
 from backend.ssl_monitor.handlers import _deps
 
@@ -111,3 +112,14 @@ def test_stop_cancels_a_cycle_that_is_still_running(monkeypatch):
 
     asyncio.run(scenario())
     assert cancelled == [True]
+
+
+@pytest.mark.parametrize("allow, guarded", [("false", True), ("true", False)])
+def test_worker_client_honours_allow_private_targets(allow, guarded):
+    settings = Settings.from_env(env={"UPTIME_ALLOW_PRIVATE_TARGETS": allow})
+
+    async def transport():
+        async with run_uptime._open_client(settings) as client:
+            return client._transport
+
+    assert isinstance(asyncio.run(transport()), GuardedTransport) is guarded

@@ -1,0 +1,385 @@
+/* ── Website (uptime) monitoring ─────────────────────────────────────── */
+
+/* Status badge: "unknown" = not checked yet (other states reuse SSL badges) */
+.badge--unknown {
+  color: var(--ink-faint);
+  background: transparent;
+  border-color: var(--line-bright);
+  border-style: dashed;
+}
+.badge--unknown .badge__dot {
+  background: var(--ink-faint);
+}
+
+/* Status counters (reuse .summary/.chip, recoloured per uptime state) */
+.mon-summary {
+  margin-bottom: 22px;
+}
+.chip--m-up::before { background: var(--ok); }
+.chip--m-down::before { background: var(--expired); }
+.chip--m-paused::before { background: var(--unreach); }
+.chip--m-unknown::before { background: var(--line-bright); }
+
+/* Table */
+.montable .col-mstatus { width: 110px; }
+.montable .col-num { text-align: right; white-space: nowrap; }
+.col-num {
+  font-family: var(--mono);
+  font-size: 13px;
+  text-align: right;
+  white-space: nowrap;
+}
+.table thead th.col-num { text-align: right; }
+.col-checked {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+.col-mgroup {
+  max-width: 200px;
+}
+
+.mon__sub {
+  display: block;
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+.mon__url {
+  font-family: var(--mono);
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mon__group {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink-dim);
+}
+
+.uptime { font-family: var(--mono); font-weight: 700; }
+.uptime--good { color: var(--ok); }
+.uptime--fair { color: var(--warn); }
+.uptime--poor { color: var(--expired); }
+.uptime--none { color: var(--ink-faint); font-weight: 400; }
+
+/* ── Add / edit modal ── */
+.monform {
+  max-width: 520px;
+}
+.monform__grid {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.monform__field select {
+  padding: 11px 12px;
+  font-size: 14px;
+  background: var(--bg);
+}
+.monform__pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.monform__label {
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.monform__error {
+  font-style: normal;
+  font-size: 12px;
+  color: var(--expired);
+}
+.monform__hint {
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+.monform__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+.monform .banner {
+  margin-bottom: 0;
+}
+[data-theme="light"] .monform__field select {
+  background: #f8faff;
+}
+
+/* ── Detail page ── */
+.mondetail__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  word-break: break-word;
+}
+.mondetail__title .badge {
+  font-size: 10px;
+}
+.mondetail__meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  align-items: center;
+}
+.mondetail__url {
+  font-family: var(--mono);
+  color: var(--accent);
+  text-decoration: none;
+  word-break: break-all;
+}
+.mondetail__url:hover { text-decoration: underline; }
+.mondetail__group {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--line-bright);
+  color: var(--ink-dim);
+  text-decoration: none;
+}
+.mondetail__group:hover { border-color: var(--accent); color: var(--accent); }
+.mondetail__down { color: var(--ink); }
+[data-theme="light"] .banner--error { color: var(--expired); }
+
+.btn--danger-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--expired);
+}
+.btn--danger-ghost:hover:not(:disabled) {
+  border-color: var(--expired);
+  background: var(--expired-bg);
+  transform: none;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 18px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+.stat__value {
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.stat__label {
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+.panel {
+  margin-bottom: 18px;
+  padding: 18px 20px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+.panel__title {
+  margin: 0 0 14px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.panel__hint {
+  margin: -6px 0 12px;
+}
+.panel .tablewrap {
+  box-shadow: none;
+}
+
+:root:not([data-theme="light"]) .stat,
+:root:not([data-theme="light"]) .panel {
+  background: rgba(17, 22, 31, 0.88);
+  border-color: rgba(255, 255, 255, 0.06);
+}
+[data-theme="light"] .stat,
+[data-theme="light"] .panel {
+  box-shadow: var(--shadow);
+}
+
+.table--compact td {
+  padding: 9px 14px;
+  font-size: 13px;
+}
+.table--compact thead th {
+  padding: 10px 14px;
+}
+.mono-dim {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+.cell-error {
+  font-size: 12px;
+  color: var(--ink-dim);
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.result {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.result--up { color: var(--ok); }
+.result--down { color: var(--expired); }
+
+/* ── Response time chart ── */
+.rtchart {
+  position: relative;
+  width: 100%;
+  min-height: 60px;
+}
+.rtchart__svg {
+  display: block;
+  overflow: visible;
+}
+.rtchart__empty {
+  margin: 0;
+  padding: 40px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--ink-faint);
+}
+.rtchart__grid {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+.rtchart__axis {
+  stroke: var(--line-bright);
+  stroke-width: 1;
+}
+.rtchart__label {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  fill: var(--ink-faint);
+}
+.rtchart__line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.rtchart__downband {
+  fill: var(--expired);
+  opacity: 0.09;
+}
+.rtchart__downmark {
+  fill: var(--expired);
+}
+.rtchart__hit {
+  fill: transparent;
+  cursor: crosshair;
+}
+.rtchart__hover line {
+  stroke: var(--ink-faint);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+.rtchart__hover circle {
+  stroke: var(--panel);
+  stroke-width: 2;
+}
+.rtchart__hover circle.is-up { fill: var(--accent); }
+.rtchart__hover circle.is-down { fill: var(--expired); }
+.rtchart__tip {
+  position: absolute;
+  transform: translateX(-50%);
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 260px;
+  padding: 7px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--line-bright);
+  background: var(--panel-2);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  color: var(--ink);
+}
+.rtchart__tip strong {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+.rtchart__tip-time {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+.rtchart__tip-down {
+  color: var(--expired);
+  word-break: break-word;
+}
+.rtchart__legend {
+  display: flex;
+  gap: 18px;
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--ink-dim);
+}
+.rtchart__legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.rtchart__key {
+  display: inline-block;
+}
+.rtchart__key--line {
+  width: 16px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.rtchart__key--down {
+  width: 10px;
+  height: 6px;
+  border-radius: 2px;
+  background: var(--expired);
+}
+
+/* ── Responsive ── */
+@media (max-width: 900px) {
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .montable .col-mgroup,
+  .montable .col-checked { display: none; }
+  .mon__url { max-width: 200px; }
+  .panel { padding: 14px; }
+  .panel .tablewrap { overflow-x: auto; }
+}
+
+.monform__pair > * { min-width: 0; }
+.monform__field input,
+.monform__field select { width: 100%; min-width: 0; }
+.empty.empty--error { border-color: var(--expired); }

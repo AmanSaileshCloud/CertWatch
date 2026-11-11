@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { motion } from "motion/react";
+import { useEscapeKey } from "../hooks/useEscapeKey";
 import { api, ApiError } from "../api";
 import type { DomainRecord } from "../types";
 
@@ -34,6 +35,7 @@ export function BulkImportModal({ onClose, onImported }: Props) {
   const [results, setResults] = useState<ResultEntry[] | null>(null);
   const [importing, setImporting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  useEscapeKey(onClose, !importing);
 
   const parsed = parseLines(text);
 

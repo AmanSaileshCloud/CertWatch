@@ -72,17 +72,23 @@ def evaluate_in_order(
     rules: Callable[[Monitor, CheckResult], MonitorTransition],
 ) -> list[MonitorTransition]:
     """Apply ``rules`` to each result in order, starting from each monitor's
-    ``current`` state; results for monitors missing from ``current`` are skipped."""
+    ``current`` state; results for monitors missing from ``current``, and stale
+    results (see :func:`is_stale`), are skipped."""
     state = dict(current)
     transitions = []
     for result in results:
         monitor = state.get(result.monitor_id)
-        if monitor is None:
+        if monitor is None or is_stale(monitor, result):
             continue
         transition = rules(monitor, result)
         state[result.monitor_id] = apply_transition(monitor, transition)
         transitions.append(transition)
     return transitions
+
+
+def is_stale(monitor: Monitor, result: CheckResult) -> bool:
+    """True if ``monitor`` was changed after the check that produced ``result`` began."""
+    return result.monitor_version is not None and result.monitor_version != monitor.updated_at
 
 
 def _require_valid_threshold(name: str, value: int) -> None:

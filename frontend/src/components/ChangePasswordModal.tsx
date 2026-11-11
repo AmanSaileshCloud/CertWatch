@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { motion } from "motion/react";
+import { useEscapeKey } from "../hooks/useEscapeKey";
 import { api, ApiError } from "../api";
 import { useToast } from "./Toast";
 
@@ -10,6 +11,7 @@ export function ChangePasswordModal({ onClose }: { onClose: () => void }) {
   const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useEscapeKey(onClose, !busy);
 
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();

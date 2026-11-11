@@ -1,5 +1,14 @@
 import type {
+  AddMemberInput,
+  AddMemberResult,
   AdminUser,
+  CheckRecord,
+  Customer,
+  GroupDetail,
+  GroupSummary,
+  IncidentRecord,
+  MonitorInput,
+  MonitorRecord,
   CertInfo,
   CheckSummary,
   DomainRecord,
@@ -103,7 +112,7 @@ export const api = {
 
   updateDomain: (
     domainKey: string,
-    payload: { alerts_enabled?: boolean },
+    payload: { alerts_enabled?: boolean; group_id?: number | null },
   ) =>
     request<DomainRecord>(`/domains/${encodeURIComponent(domainKey)}`, {
       method: "PATCH",
@@ -145,4 +154,53 @@ export const api = {
   },
 
   runChecks: () => request<CheckSummary>("/checks/run", { method: "POST" }),
+
+  // ── Website monitors ──
+  listMonitors: (filter: { group_id?: number; customer_id?: number } = {}) =>
+    request<MonitorRecord[]>(`/monitors${query(filter)}`),
+  getMonitor: (id: number) => request<MonitorRecord>(`/monitors/${id}`),
+  addMonitor: (payload: MonitorInput) =>
+    request<MonitorRecord>("/monitors", { method: "POST", body: JSON.stringify(payload) }),
+  updateMonitor: (id: number, payload: Partial<MonitorInput>) =>
+    request<MonitorRecord>(`/monitors/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteMonitor: (id: number) => request<void>(`/monitors/${id}`, { method: "DELETE" }),
+  pauseMonitor: (id: number) => request<MonitorRecord>(`/monitors/${id}/pause`, { method: "POST" }),
+  resumeMonitor: (id: number) =>
+    request<MonitorRecord>(`/monitors/${id}/resume`, { method: "POST" }),
+  listChecks: (id: number, limit = 50) =>
+    request<CheckRecord[]>(`/monitors/${id}/checks${query({ limit })}`),
+  getSeries: (id: number, hours = 24) =>
+    request<CheckRecord[]>(`/monitors/${id}/series${query({ hours })}`),
+  listMonitorIncidents: (id: number, limit = 50) =>
+    request<IncidentRecord[]>(`/monitors/${id}/incidents${query({ limit })}`),
+
+  // ── Customers ──
+  listCustomers: () => request<Customer[]>("/customers"),
+  addCustomer: (name: string, contact_email: string | null) =>
+    request<Customer>("/customers", { method: "POST", body: JSON.stringify({ name, contact_email }) }),
+  updateCustomer: (id: number, payload: { name?: string; contact_email?: string | null }) =>
+    request<Customer>(`/customers/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteCustomer: (id: number) => request<void>(`/customers/${id}`, { method: "DELETE" }),
+
+  // ── Groups ──
+  listGroups: (customer_id?: number) =>
+    request<GroupSummary[]>(`/groups${query({ customer_id })}`),
+  getGroup: (id: number) => request<GroupDetail>(`/groups/${id}`),
+  addGroup: (customer_id: number, name: string) =>
+    request<GroupSummary>("/groups", { method: "POST", body: JSON.stringify({ customer_id, name }) }),
+  renameGroup: (id: number, name: string) =>
+    request<GroupSummary>(`/groups/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  deleteGroup: (id: number) => request<void>(`/groups/${id}`, { method: "DELETE" }),
+  addGroupMember: (groupId: number, payload: AddMemberInput) =>
+    request<AddMemberResult>(`/groups/${groupId}/members`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
 };
+
+/** Build a query string from defined values only: {a: 1, b: undefined} → "?a=1". */
+function query(params: Record<string, string | number | undefined>): string {
+  const pairs = Object.entries(params).filter(([, v]) => v !== undefined) as [string, string | number][];
+  if (pairs.length === 0) return "";
+  return "?" + new URLSearchParams(pairs.map(([k, v]) => [k, String(v)])).toString();
+}

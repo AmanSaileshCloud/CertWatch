@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from datetime import datetime, timezone
 
@@ -49,18 +49,22 @@ def _utc_now() -> datetime:
 async def _check_safely(
     probe: UptimeProbeFn, monitor: Monitor, checked_at: datetime, region: str
 ) -> CheckResult:
-    """Run the probe; a bug in it becomes a "down" result instead of breaking the cycle."""
+    """Run the probe; a bug in it becomes a "down" result instead of breaking the cycle.
+
+    The result is stamped with the claimed monitor's ``updated_at``, so the save step
+    can drop it if the monitor is edited while the check is in flight."""
     try:
-        return await probe(monitor, checked_at)
+        result = await probe(monitor, checked_at)
     except Exception as exc:
         logger.exception("Probe crashed for monitor %s", monitor.id)
-        return CheckResult(
+        result = CheckResult(
             monitor_id=monitor.id,
             checked_at=checked_at,
             is_up=False,
             error=f"Checker error: {type(exc).__name__}",
             region=region,
         )
+    return replace(result, monitor_version=monitor.updated_at)
 
 
 def _log_incident_changes(incidents: Sequence[Incident]) -> None:
@@ -92,7 +96,8 @@ async def run_cycle(
     """Check every due monitor once, apply the incident rules, and persist the outcome.
 
     The rules run inside the repo's save transaction against each monitor's current
-    stored state, so a pause or edit made while a check was in flight wins.
+    stored state, so a pause or edit made while a check was in flight wins (an edited
+    monitor's in-flight result is dropped).
 
     ``now`` decides which monitors are due; each result is stamped with
     ``clock()`` when its check actually starts (after waiting for a free slot).

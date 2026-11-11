@@ -4,6 +4,9 @@ import { AuthProvider } from "./auth/AuthContext.tsx";
 import { ToastProvider } from "./components/Toast.tsx";
 import App from "./App.tsx";
 import "./styles.css";
+import "./styles/shell.css";
+import "./styles/websites.css";
+import "./styles/groups.css";
 
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("root element missing");

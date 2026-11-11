@@ -1,6 +1,13 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 
+// The aurora is a soft blur, so it is drawn at half resolution and ~30 fps and
+// stretched to full screen — about 1/8 of the GPU work of full-res 60 fps, with
+// no visible difference. It stops completely while the browser tab is hidden.
+const RENDER_SCALE = 0.5;
+const FRAME_INTERVAL_MS = 1000 / 30;
+const TIME_PER_SECOND = 1.0; // shader time units per second (was 0.016 per 60 fps frame)
+
 /**
  * Animated aurora shader rendered as a fixed, full-viewport background layer.
  * Sits behind the dashboard (z-index 0); a CSS scrim over it keeps content
@@ -17,11 +24,11 @@ export function AuroraBackground() {
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
     let renderer: THREE.WebGLRenderer;
     try {
-      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true });
     } catch {
       return; // WebGL unavailable — skip aurora, page still renders normally
     }
-    renderer.setPixelRatio(1); // background — keep the fill rate cheap
+    renderer.setPixelRatio(RENDER_SCALE);
     renderer.setSize(window.innerWidth, window.innerHeight);
     container.appendChild(renderer.domElement);
 
@@ -29,7 +36,7 @@ export function AuroraBackground() {
       transparent: true,
       uniforms: {
         iTime: { value: 0 },
-        iResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+        iResolution: { value: new THREE.Vector2(window.innerWidth * RENDER_SCALE, window.innerHeight * RENDER_SCALE) },
       },
       vertexShader: /* glsl */ `
         void main() {
@@ -109,28 +116,46 @@ export function AuroraBackground() {
 
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     let frameId = 0;
+    let lastFrame = 0;
 
-    const animate = () => {
-      material.uniforms.iTime.value += 0.016;
-      renderer.render(scene, camera);
+    const animate = (now: number) => {
       frameId = requestAnimationFrame(animate);
+      const elapsed = now - lastFrame;
+      if (elapsed < FRAME_INTERVAL_MS) return;
+      lastFrame = now;
+      material.uniforms.iTime.value += Math.min(elapsed, 100) / 1000 * TIME_PER_SECOND;
+      renderer.render(scene, camera);
     };
+
+    const start = () => {
+      if (frameId === 0) frameId = requestAnimationFrame(animate);
+    };
+    const stop = () => {
+      cancelAnimationFrame(frameId);
+      frameId = 0;
+    };
+    const handleVisibility = () => (document.hidden ? stop() : start());
 
     if (reduced) {
       renderer.render(scene, camera); // single static frame
     } else {
-      animate();
+      start();
+      document.addEventListener("visibilitychange", handleVisibility);
     }
 
     const handleResize = () => {
       renderer.setSize(window.innerWidth, window.innerHeight);
-      material.uniforms.iResolution.value.set(window.innerWidth, window.innerHeight);
+      material.uniforms.iResolution.value.set(
+        window.innerWidth * RENDER_SCALE,
+        window.innerHeight * RENDER_SCALE,
+      );
       if (reduced) renderer.render(scene, camera);
     };
     window.addEventListener("resize", handleResize);
 
     return () => {
-      if (frameId) cancelAnimationFrame(frameId);
+      stop();
+      document.removeEventListener("visibilitychange", handleVisibility);
       window.removeEventListener("resize", handleResize);
       if (renderer.domElement.parentNode === container) {
         container.removeChild(renderer.domElement);

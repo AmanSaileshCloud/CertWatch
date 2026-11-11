@@ -271,3 +271,33 @@ def test_custom_recovery_threshold_needs_two_successes():
     assert second_success.recovered == 1
     assert second_success.incidents[0].duration_seconds == 120
     assert repo.get_monitor(site.id).state is MonitorState.UP
+
+
+def test_result_of_monitor_edited_mid_check_is_not_saved():
+    repo = MemoryUptimeRepo()
+    site = _add(repo, "site")
+
+    async def probe_then_edit(monitor: Monitor, now: datetime) -> CheckResult:
+        repo.change_monitor(monitor.id, {"keyword": "new"}, now=now + timedelta(seconds=1))
+        return _result(monitor, now, up=False)
+
+    _run(repo, probe_then_edit)
+
+    assert repo.list_check_results(site.id) == []
+    assert repo.get_monitor(site.id).consecutive_failures == 0
+
+
+def test_results_are_stamped_with_the_claimed_monitor_version():
+    repo = MemoryUptimeRepo()
+    site = _add(repo, "site")
+    seen: list[CheckResult] = []
+    real_record = repo.record_checks
+
+    def spy(results, rules):
+        seen.extend(results)
+        return real_record(results, rules)
+
+    repo.record_checks = spy
+    _run(repo, RecordingProbe())
+
+    assert [r.monitor_version for r in seen] == [site.updated_at]

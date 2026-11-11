@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { motion } from "motion/react";
+import { useEscapeKey } from "../hooks/useEscapeKey";
 import { api, ApiError } from "../api";
 import type { AdminUser } from "../types";
 import { useToast } from "./Toast";
@@ -12,6 +13,7 @@ export function UsersAdmin({ onClose, currentUser }: { onClose: () => void; curr
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<"user" | "admin">("user");
   const [busy, setBusy] = useState(false);
+  useEscapeKey(onClose, !busy);
 
   async function refresh() {
     try {

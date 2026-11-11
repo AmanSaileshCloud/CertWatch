@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { motion } from "motion/react";
+import { useEscapeKey } from "../hooks/useEscapeKey";
 
 type Props = {
   title: string;
@@ -18,6 +19,7 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
 }: Props) {
+  useEscapeKey(onCancel);
   return (
     <motion.div
       className="modal__backdrop"

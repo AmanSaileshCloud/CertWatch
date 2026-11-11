@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    ARRAY,
     DateTime,
     Engine,
     Integer,
+    any_,
     bindparam,
     case,
     cast,
+    delete,
     func,
     insert,
     literal,
@@ -23,6 +26,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from ...core.uptime_models import (
     CheckResult,
+    CloseReason,
     Incident,
     IncidentEvent,
     Monitor,
@@ -46,6 +50,16 @@ _CONFIG_FIELDS = (
     "keyword",
     "is_paused",
 )
+
+# Fields a user change (``change_monitor``) may set; runtime state is not among them.
+_EDITABLE_FIELDS = frozenset(_CONFIG_FIELDS) | {"next_check_at"}
+
+_RESET_STATE = {
+    "state": MonitorState.UNKNOWN.value,
+    "consecutive_failures": 0,
+    "consecutive_successes": 0,
+    "first_failure_at": None,
+}
 
 _RESULT_COLUMNS = (
     check_results.c.monitor_id,
@@ -82,7 +96,21 @@ def _result_to_row(result: CheckResult) -> dict[str, Any]:
 
 
 def _row_to_incident(row: Any) -> Incident:
-    return Incident(**row._mapping)
+    data = dict(row._mapping)
+    if data["close_reason"] is not None:
+        data["close_reason"] = CloseReason(data["close_reason"])
+    return Incident(**data)
+
+
+def _change_to_row(values: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate a ``change_monitor`` mapping and convert it to column values."""
+    unknown = set(values) - _EDITABLE_FIELDS
+    if unknown:
+        raise ValueError(f"cannot change monitor field(s): {', '.join(sorted(unknown))}")
+    row = dict(values)
+    if "type" in row:
+        row["type"] = MonitorType(row["type"]).value
+    return row
 
 
 def _monitor_state_row(transition: MonitorTransition) -> dict[str, Any]:
@@ -168,15 +196,67 @@ class PostgresUptimeRepo:
         with self._engine.connect() as conn:
             return [_row_to_incident(row) for row in conn.execute(stmt)]
 
-    def list_check_results(self, monitor_id: int, limit: int = 100) -> list[CheckResult]:
+    def list_check_results(
+        self, monitor_id: int, limit: int = 100, since: datetime | None = None
+    ) -> list[CheckResult]:
         stmt = (
             select(*_RESULT_COLUMNS)
             .where(check_results.c.monitor_id == monitor_id)
             .order_by(check_results.c.checked_at.desc(), check_results.c.id.desc())
             .limit(limit)
         )
+        if since is not None:
+            stmt = stmt.where(check_results.c.checked_at >= since)
         with self._engine.connect() as conn:
             return [_row_to_result(row) for row in conn.execute(stmt)]
+
+    def list_monitors(self) -> list[Monitor]:
+        stmt = select(monitors).order_by(monitors.c.name, monitors.c.id)
+        with self._engine.connect() as conn:
+            return [_row_to_monitor(row) for row in conn.execute(stmt)]
+
+    def change_monitor(
+        self,
+        monitor_id: int,
+        values: Mapping[str, Any],
+        *,
+        now: datetime,
+        reset_state: bool = False,
+        close_reason: CloseReason | None = None,
+    ) -> Monitor | None:
+        row = _change_to_row(values) | (_RESET_STATE if reset_state else {}) | {"updated_at": now}
+        lock = select(monitors.c.id).where(monitors.c.id == monitor_id).with_for_update(
+            key_share=True)
+        change = update(monitors).where(monitors.c.id == monitor_id).values(**row)
+        with self._engine.begin() as conn:
+            if conn.execute(lock).first() is None:
+                return None
+            if close_reason is not None:
+                _close_incident(conn, monitor_id, now, close_reason)
+            return _row_to_monitor(conn.execute(change.returning(*monitors.c)).one())
+
+    def delete_monitor(self, monitor_id: int) -> bool:
+        stmt = delete(monitors).where(monitors.c.id == monitor_id).returning(monitors.c.id)
+        with self._engine.begin() as conn:
+            return conn.execute(stmt).first() is not None
+
+    def uptime_counts(
+        self, since: datetime, monitor_ids: Collection[int] | None = None
+    ) -> dict[int, tuple[int, int]]:
+        stmt = (
+            select(
+                check_results.c.monitor_id,
+                func.count(),
+                func.count().filter(check_results.c.is_up),
+            )
+            .where(check_results.c.checked_at >= since)
+            .group_by(check_results.c.monitor_id)
+        )
+        if monitor_ids is not None:
+            ids = bindparam("monitor_ids", list(monitor_ids), type_=ARRAY(Integer))
+            stmt = stmt.where(check_results.c.monitor_id == any_(ids))
+        with self._engine.connect() as conn:
+            return {monitor_id: (total, up) for monitor_id, total, up in conn.execute(stmt)}
 
 
 def _advance_next_check(now: datetime, ids: list[int]):
@@ -210,7 +290,9 @@ def _apply_incident_events(conn: Any, transitions: list[MonitorTransition]) -> l
         if transition.event is IncidentEvent.WENT_DOWN:
             changed.append(_open_incident(conn, transition))
         elif transition.event is IncidentEvent.RECOVERED:
-            changed.append(_close_incident(conn, transition.result))
+            result = transition.result
+            changed.append(_close_incident(conn, result.monitor_id, result.checked_at,
+                                           CloseReason.RECOVERED))
     return [incident for incident in changed if incident is not None]
 
 
@@ -233,15 +315,18 @@ def _open_incident(conn: Any, transition: MonitorTransition) -> Incident | None:
     return _row_to_incident(row) if row is not None else None
 
 
-def _close_incident(conn: Any, result: CheckResult) -> Incident | None:
-    """Resolve the monitor's open incident at ``result.checked_at``; None if none is open."""
-    resolved_at = literal(result.checked_at, DateTime(timezone=True))
+def _close_incident(
+    conn: Any, monitor_id: int, at: datetime, reason: CloseReason
+) -> Incident | None:
+    """Resolve the monitor's open incident at ``at``; None if none is open."""
+    resolved_at = literal(at, DateTime(timezone=True))
     elapsed = func.floor(func.extract("epoch", resolved_at - incidents.c.started_at))
     stmt = (
         update(incidents)
-        .where(incidents.c.monitor_id == result.monitor_id, incidents.c.resolved_at.is_(None))
+        .where(incidents.c.monitor_id == monitor_id, incidents.c.resolved_at.is_(None))
         .values(resolved_at=resolved_at,
-                duration_seconds=cast(func.greatest(0, elapsed), Integer))
+                duration_seconds=cast(func.greatest(0, elapsed), Integer),
+                close_reason=reason.value)
         .returning(*incidents.c)
     )
     row = conn.execute(stmt).first()

@@ -1,7 +1,7 @@
 import { useAuth } from "./auth/AuthContext";
 import { useTheme } from "./hooks/useTheme";
 import { Login } from "./components/Login";
-import { Dashboard } from "./components/Dashboard";
+import { AppShell } from "./components/layout/AppShell";
 
 export default function App() {
   const { user, ready } = useAuth();
@@ -15,9 +15,5 @@ export default function App() {
     );
   }
 
-  return user ? (
-    <Dashboard theme={theme} preference={preference} onToggleTheme={cycle} />
-  ) : (
-    <Login />
-  );
+  return user ? <AppShell theme={theme} preference={preference} onToggleTheme={cycle} /> : <Login />;
 }

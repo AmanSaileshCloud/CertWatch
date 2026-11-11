@@ -130,6 +130,9 @@ class Settings:
     uptime_max_body_bytes: int = 1_000_000  # page bytes read for the keyword check
     uptime_failure_threshold: int = 3  # failures in a row before a monitor is DOWN
     uptime_recovery_threshold: int = 1  # successes in a row before it is UP again
+    # Allow monitors on private/loopback/link-local addresses (internal sites).
+    # Off by default: stops the checker being pointed at e.g. the EC2 metadata service.
+    uptime_allow_private_targets: bool = False
 
     @property
     def is_local(self) -> bool:
@@ -218,6 +221,9 @@ class Settings:
             uptime_max_body_bytes=_positive(int, e, "UPTIME_MAX_BODY_BYTES", "1000000"),
             uptime_failure_threshold=_positive(int, e, "UPTIME_FAILURE_THRESHOLD", "3"),
             uptime_recovery_threshold=_positive(int, e, "UPTIME_RECOVERY_THRESHOLD", "1"),
+            uptime_allow_private_targets=(
+                e.get("UPTIME_ALLOW_PRIVATE_TARGETS", "false").strip().lower() == "true"
+            ),
         )
 
     def boto_kwargs(self) -> dict:

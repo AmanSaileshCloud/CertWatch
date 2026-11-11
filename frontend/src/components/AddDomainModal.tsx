@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { motion } from "motion/react";
+import { useEscapeKey } from "../hooks/useEscapeKey";
 
 type Props = {
   onClose: () => void;
@@ -11,6 +12,7 @@ export function AddDomainModal({ onClose, onAdd, busy }: Props) {
   const [domain, setDomain] = useState("");
   const [port, setPort] = useState("443");
   const [agentId, setAgentId] = useState("");
+  useEscapeKey(onClose, !busy);
 
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();

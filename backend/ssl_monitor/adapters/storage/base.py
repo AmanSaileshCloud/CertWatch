@@ -7,12 +7,13 @@ wiring layer do.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
+from ...core.catalog_models import Customer, MonitorGroup
 from ...core.models import DomainRecord
-from ...core.uptime_models import CheckResult, Incident, Monitor, MonitorTransition
+from ...core.uptime_models import CheckResult, CloseReason, Incident, Monitor, MonitorTransition
 
 # (current monitor, result) -> transition; the incident rules with thresholds bound.
 IncidentRules = Callable[[Monitor, CheckResult], MonitorTransition]
@@ -61,7 +62,9 @@ class UptimeRepoPort(Protocol):
         Each monitor row is locked and re-read, and ``rules(current_monitor, result)``
         is applied to the CURRENT stored state — never to the snapshot taken at claim
         time — so a pause or edit made while the check was in flight is respected.
-        Results for monitors that were deleted or paused meanwhile are dropped.
+        Results for monitors that were deleted or paused meanwhile are dropped, and so
+        is a result whose ``monitor_version`` is set but differs from the row's current
+        ``updated_at`` (the monitor was edited while the check was in flight).
         For the rest:
 
         * insert the result into check_results;
@@ -81,6 +84,93 @@ class UptimeRepoPort(Protocol):
         """Incidents newest-started first; all monitors when ``monitor_id`` is None."""
         ...
 
-    def list_check_results(self, monitor_id: int, limit: int = 100) -> list[CheckResult]:
-        """Most recent results for one monitor, newest first."""
+    def list_check_results(
+        self, monitor_id: int, limit: int = 100, since: datetime | None = None
+    ) -> list[CheckResult]:
+        """Most recent results for one monitor, newest first; only ``checked_at >= since``
+        when given."""
+        ...
+
+    def list_monitors(self) -> list[Monitor]:
+        """Every monitor, ordered by name then id."""
+        ...
+
+    def change_monitor(
+        self,
+        monitor_id: int,
+        values: Mapping[str, Any],
+        *,
+        now: datetime,
+        reset_state: bool = False,
+        close_reason: CloseReason | None = None,
+    ) -> Monitor | None:
+        """Apply a user change in ONE transaction (locking the monitor row, so it
+        serialises with ``record_checks``) and return the updated monitor, or None if
+        it does not exist.
+
+        * ``values``: Monitor field names → new values (config fields, ``is_paused``,
+          ``next_check_at``); ``updated_at`` is set to ``now``.
+        * ``reset_state``: state → UNKNOWN, both counters → 0, first_failure_at → None.
+        * ``close_reason``: close the open incident, if any, at ``now`` (duration in
+          whole seconds) with that reason."""
+        ...
+
+    def delete_monitor(self, monitor_id: int) -> bool:
+        """Delete a monitor (its results and incidents go with it). True if it existed."""
+        ...
+
+    def uptime_counts(
+        self, since: datetime, monitor_ids: Collection[int] | None = None
+    ) -> dict[int, tuple[int, int]]:
+        """``{monitor_id: (total_checks, up_checks)}`` for checks at or after ``since``,
+        only for ``monitor_ids`` when given (all monitors when None). Monitors with no
+        checks in the window are absent."""
+        ...
+
+
+class DuplicateNameError(ValueError):
+    """A customer or group name is already taken (names are unique per scope)."""
+
+
+@runtime_checkable
+class CatalogRepoPort(Protocol):
+    """Persistence for customers and monitor groups.
+
+    Deleting a customer deletes its groups; deleting a group ungroups its SSL domains
+    and website monitors (they are never deleted)."""
+
+    def list_customers(self) -> list[Customer]:
+        """Ordered by name."""
+        ...
+
+    def get_customer(self, customer_id: int) -> Customer | None:
+        ...
+
+    def add_customer(self, name: str, contact_email: str | None = None) -> Customer:
+        """Raises DuplicateNameError if the name exists."""
+        ...
+
+    def update_customer(self, customer_id: int, values: Mapping[str, Any]) -> Customer | None:
+        """``values`` may hold ``name`` / ``contact_email``. Raises DuplicateNameError."""
+        ...
+
+    def delete_customer(self, customer_id: int) -> bool:
+        ...
+
+    def list_groups(self, customer_id: int | None = None) -> list[MonitorGroup]:
+        """Ordered by name; only one customer's groups when ``customer_id`` is given."""
+        ...
+
+    def get_group(self, group_id: int) -> MonitorGroup | None:
+        ...
+
+    def add_group(self, customer_id: int, name: str) -> MonitorGroup:
+        """Raises DuplicateNameError if the customer already has a group with that name."""
+        ...
+
+    def rename_group(self, group_id: int, name: str) -> MonitorGroup | None:
+        """Raises DuplicateNameError."""
+        ...
+
+    def delete_group(self, group_id: int) -> bool:
         ...

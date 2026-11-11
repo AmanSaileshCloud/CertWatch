@@ -4,7 +4,9 @@ import react from "@vitejs/plugin-react";
 // Local dev: proxy API calls to uvicorn on :8000 (avoids CORS in dev).
 // Production build: VITE_API_URL is injected by `make deploy-frontend` and
 // baked into the JS bundle as import.meta.env.VITE_API_URL.
-const DEV_API = "http://localhost:8000";
+// 127.0.0.1, not "localhost": on Windows "localhost" tries IPv6 (::1) first and
+// waits ~200 ms per request before falling back, because uvicorn listens on IPv4.
+const DEV_API = "http://127.0.0.1:8000";
 
 export default defineConfig({
   plugins: [react()],
@@ -16,6 +18,9 @@ export default defineConfig({
       "/domains": DEV_API,
       "/checks":  DEV_API,
       "/health":  DEV_API,
+      "/monitors":  DEV_API,
+      "/customers": DEV_API,
+      "/groups":    DEV_API,
     },
   },
   define: {

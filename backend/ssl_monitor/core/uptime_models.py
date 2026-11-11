@@ -26,6 +26,14 @@ class MonitorState(str, Enum):
     DOWN = "down"
 
 
+class CloseReason(str, Enum):
+    """Why an incident was closed."""
+
+    RECOVERED = "recovered"  # the site came back (recovery threshold reached)
+    PAUSED = "paused"  # the monitor was paused during the outage
+    EDITED = "edited"  # the monitor's target changed (URL / expected status / keyword)
+
+
 class AlertChannel(str, Enum):
     EMAIL = "email"
     SNS = "sns"
@@ -61,7 +69,11 @@ class Monitor:
 
 @dataclass(frozen=True)
 class CheckResult:
-    """Outcome of one check of one monitor."""
+    """Outcome of one check of one monitor.
+
+    ``monitor_version`` is the checked monitor's ``updated_at`` when it was claimed;
+    a result whose version no longer matches the stored monitor is stale (the
+    monitor was edited mid-check) and is not saved. None means "don't compare"."""
 
     monitor_id: int
     checked_at: datetime
@@ -70,6 +82,7 @@ class CheckResult:
     response_ms: int | None = None
     error: str | None = None
     region: str = DEFAULT_REGION
+    monitor_version: datetime | None = None
 
 
 class IncidentEvent(str, Enum):
@@ -108,6 +121,7 @@ class Incident:
     reason: str | None = None
     down_alert_sent_at: datetime | None = None
     recovery_alert_sent_at: datetime | None = None
+    close_reason: CloseReason | None = None
 
     @property
     def is_open(self) -> bool:

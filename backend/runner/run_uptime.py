@@ -57,7 +57,11 @@ def _make_probe(client: httpx.AsyncClient, settings: Settings) -> UptimeProbeFn:
 
 
 def _open_client(settings: Settings) -> httpx.AsyncClient:
-    return make_http_client(settings.uptime_user_agent, settings.uptime_max_concurrency)
+    return make_http_client(
+        settings.uptime_user_agent,
+        settings.uptime_max_concurrency,
+        allow_private=settings.uptime_allow_private_targets,
+    )
 
 
 def _now() -> datetime:
