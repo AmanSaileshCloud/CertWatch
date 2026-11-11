@@ -250,6 +250,14 @@ sudo -u postgres psql certwatch             # database shell
 - **Rotate `AUTH_SECRET`:** put a new `openssl rand -hex 32` in the env file and restart `certwatch-api`. Everyone must log in again.
 - **The API refuses to start** if `AUTH_SECRET` is empty, too short or still a `CHANGE_ME` placeholder. Check `journalctl -u certwatch-api -n 30`.
 - **SSL check interval:** run `sudo systemctl edit --full certwatch-checker-loop`, change `--interval 300`, then restart.
+- **The only admin forgot their password:** the accounts live in `/opt/certwatch/data/auth_users.json`. When that file is empty or missing, the API creates `admin` again with `AUTH_BOOTSTRAP_PASSWORD` from the env file. This removes **all** user accounts; customers, websites and history aren't affected.
+  ```bash
+  sudo systemctl stop certwatch-api
+  sudo mv /opt/certwatch/data/auth_users.json /opt/certwatch/data/auth_users.json.old
+  sudo systemctl start certwatch-api
+  sudo grep ^AUTH_BOOTSTRAP_PASSWORD= /etc/certwatch/certwatch.env   # log in as admin with this
+  ```
+  Then change the admin password and re-create the other users.
 - **Disk space:** raw check results are kept for `UPTIME_RAW_RETENTION_DAYS` (30). Older history lives on in the hourly summary table.
 
 ## 9. Known limits (fine for launch; on the roadmap)
