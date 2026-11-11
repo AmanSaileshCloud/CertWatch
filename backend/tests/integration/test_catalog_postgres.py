@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import replace
 
 import pytest
+from sqlalchemy import insert
 
+from backend.ssl_monitor.adapters.db.tables import alert_rules
 from backend.ssl_monitor.adapters.storage.base import CatalogRepoPort, DuplicateNameError
 from backend.ssl_monitor.adapters.storage.catalog_postgres import PostgresCatalogRepo
 from backend.ssl_monitor.adapters.storage.postgres import PostgresStorage
 from backend.ssl_monitor.adapters.storage.uptime_postgres import PostgresUptimeRepo
+from backend.ssl_monitor.core.alert_models import AlertKind, AlertRule
 from backend.ssl_monitor.core.models import DomainRecord
-from backend.ssl_monitor.core.uptime_models import Monitor
+from backend.ssl_monitor.core.uptime_models import AlertChannel, Monitor
 
 pytestmark = pytest.mark.postgres
 
@@ -147,3 +151,153 @@ def test_delete_customer_removes_its_groups_and_ungroups_members(pg):
 
     assert repo.list_groups() == [kept]
     assert _group_ids(pg, domain_key, monitor_id) == (None, None)
+
+
+# --- Step 4: alert rules ---------------------------------------------------------------
+
+
+def _alert_setup(pg):
+    """A catalog repo, customer Acme, Acme's website monitor, and one other monitor."""
+    repo = PostgresCatalogRepo(pg)
+    acme = repo.add_customer("Acme")
+    uptime = PostgresUptimeRepo(pg)
+    site = uptime.add_monitor(Monitor(id=0, name="Site", url="https://acme.com",
+                                      interval_seconds=300, customer_id=acme.id))
+    uptime.add_monitor(Monitor(id=0, name="Other", url="https://other.com",
+                               interval_seconds=300))
+    return repo, acme, site
+
+def _rule(target: str, **fields) -> AlertRule:
+    return AlertRule(id=0, target=target, **fields)
+
+
+def test_alert_rule_crud_and_scopes(pg):
+    repo, acme, site = _alert_setup(pg)
+    global_b = repo.add_alert_rule(_rule("b@x.com"))
+    global_a = repo.add_alert_rule(_rule("a@x.com", on_recovery=False))
+    for_acme = repo.add_alert_rule(_rule("ops@acme.com", customer_id=acme.id))
+    for_site = repo.add_alert_rule(_rule("dev@acme.com", monitor_id=site.id))
+
+    assert (global_a.channel, global_a.on_down, global_a.on_recovery, global_a.enabled) == (
+        AlertChannel.EMAIL, True, False, True)
+    assert global_a.created_at is not None and global_a.id != global_b.id
+    assert repo.list_alert_rules() == [global_a, global_b]
+    assert repo.list_alert_rules(customer_id=acme.id) == [for_acme]
+    assert repo.list_alert_rules(monitor_id=site.id) == [for_site]
+    assert repo.list_alert_rules(customer_id=999) == []
+
+    updated = repo.update_alert_rule(for_acme.id, {"on_down": False, "enabled": False})
+    assert updated == replace(for_acme, on_down=False, enabled=False)
+    assert repo.list_alert_rules(customer_id=acme.id) == [updated]
+    assert repo.update_alert_rule(for_acme.id, {}) == updated
+    assert repo.update_alert_rule(999, {"enabled": True}) is None
+
+    assert repo.delete_alert_rule(global_b.id) is True
+    assert repo.delete_alert_rule(global_b.id) is False
+    assert repo.list_alert_rules() == [global_a]
+
+
+def test_alert_rule_target_is_lower_cased(pg):
+    repo, _, _ = _alert_setup(pg)
+    assert repo.add_alert_rule(_rule(" Ops@Acme.COM ")).target == "ops@acme.com"
+
+
+def test_update_alert_rule_rejects_unknown_fields(pg):
+    repo, _, _ = _alert_setup(pg)
+    rule = repo.add_alert_rule(_rule("a@x.com"))
+    with pytest.raises(ValueError, match="target"):
+        repo.update_alert_rule(rule.id, {"target": "b@x.com"})
+
+
+def test_duplicate_alert_rule_targets_are_rejected_per_scope(pg):
+    repo, acme, site = _alert_setup(pg)
+    for scope in ({}, {"customer_id": acme.id}, {"monitor_id": site.id}):
+        repo.add_alert_rule(_rule("ops@acme.com", **scope))
+        with pytest.raises(DuplicateNameError):
+            repo.add_alert_rule(_rule("OPS@acme.com", **scope))
+
+    assert len(repo.list_alert_rules(customer_id=acme.id)) == 1
+
+
+def test_duplicate_alert_rule_inserted_concurrently_is_a_duplicate_name_error(pg):
+    repo, acme, _ = _alert_setup(pg)
+    with pg.begin() as conn:  # another API worker won the race (stored mixed case)
+        conn.execute(insert(alert_rules).values(customer_id=acme.id, target="OPS@Acme.com",
+                                                channel="email"))
+    with pytest.raises(DuplicateNameError, match="ops@acme.com is already an alert recipient"):
+        repo.add_alert_rule(_rule("ops@acme.com", customer_id=acme.id))
+
+
+def test_alert_rule_for_customer_and_monitor_is_rejected(pg):
+    repo, acme, site = _alert_setup(pg)
+    with pytest.raises(ValueError) as caught:
+        repo.add_alert_rule(_rule("a@x.com", customer_id=acme.id, monitor_id=site.id))
+    assert not isinstance(caught.value, DuplicateNameError)
+    assert repo.list_alert_rules(customer_id=acme.id) == []
+
+
+def test_alert_rule_for_missing_customer_raises_value_error(pg):
+    repo, _, _ = _alert_setup(pg)
+    with pytest.raises(ValueError) as caught:
+        repo.add_alert_rule(_rule("a@x.com", customer_id=999))
+    assert not isinstance(caught.value, DuplicateNameError)
+
+
+def test_deleting_a_customer_deletes_its_alert_rules(pg):
+    repo, acme, _ = _alert_setup(pg)
+    repo.add_alert_rule(_rule("ops@acme.com", customer_id=acme.id))
+    repo.delete_customer(acme.id)
+    assert repo.list_alert_rules(customer_id=acme.id) == []
+
+
+def test_recipients_combine_global_customer_and_monitor_rules(pg):
+    repo, acme, site = _alert_setup(pg)
+    globex = repo.add_customer("Globex")
+    repo.add_alert_rule(_rule("global@x.com"))
+    repo.add_alert_rule(_rule("ops@acme.com", customer_id=acme.id))
+    repo.add_alert_rule(_rule("dev@acme.com", monitor_id=site.id))
+    repo.add_alert_rule(_rule("ops@globex.com", customer_id=globex.id))
+    repo.add_alert_rule(_rule("other@acme.com", monitor_id=site.id + 1))
+
+    assert repo.recipients_for(site, AlertKind.DOWN) == [
+        "dev@acme.com", "global@x.com", "ops@acme.com"]
+    loose = replace(site, id=site.id + 1, customer_id=None)
+    assert repo.recipients_for(loose, AlertKind.DOWN) == ["global@x.com", "other@acme.com"]
+
+
+def test_recipients_filter_by_kind_and_enabled(pg):
+    repo, acme, site = _alert_setup(pg)
+    repo.add_alert_rule(_rule("both@x.com"))
+    repo.add_alert_rule(_rule("down@x.com", on_recovery=False))
+    repo.add_alert_rule(_rule("up@x.com", customer_id=acme.id, on_down=False))
+    repo.add_alert_rule(_rule("neither@x.com", monitor_id=site.id, on_down=False,
+                              on_recovery=False))
+    repo.add_alert_rule(_rule("off@x.com", enabled=False))
+
+    assert repo.recipients_for(site, AlertKind.DOWN) == ["both@x.com", "down@x.com"]
+    assert repo.recipients_for(site, AlertKind.REMINDER) == ["both@x.com", "down@x.com"]
+    assert repo.recipients_for(site, AlertKind.RECOVERED) == ["both@x.com", "up@x.com"]
+    assert repo.recipients_for(site, AlertKind.TEST) == [
+        "both@x.com", "down@x.com", "neither@x.com", "up@x.com"]
+
+
+def test_recipients_are_de_duplicated(pg):
+    repo, acme, site = _alert_setup(pg)
+    repo.add_alert_rule(_rule("ops@acme.com"))
+    repo.add_alert_rule(_rule("OPS@acme.com", customer_id=acme.id))
+    repo.add_alert_rule(_rule("Ops@Acme.com", monitor_id=site.id))
+
+    assert repo.recipients_for(site, AlertKind.DOWN) == ["ops@acme.com"]
+
+
+def test_alert_rule_for_missing_monitor_raises_value_error(pg):
+    repo, _, _ = _alert_setup(pg)
+    with pytest.raises(ValueError, match="monitor"):
+        repo.add_alert_rule(_rule("a@x.com", monitor_id=999))
+
+
+def test_deleting_a_monitor_deletes_its_alert_rules(pg):
+    repo, _, site = _alert_setup(pg)
+    repo.add_alert_rule(_rule("dev@acme.com", monitor_id=site.id))
+    PostgresUptimeRepo(pg).delete_monitor(site.id)
+    assert repo.list_alert_rules(monitor_id=site.id) == []

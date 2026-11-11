@@ -1,13 +1,14 @@
 import type { ReactNode } from "react";
 import type { Route } from "../../hooks/useHashRoute";
 
-type Section = "ssl" | "websites" | "groups" | "reports";
+type Section = "ssl" | "websites" | "groups" | "reports" | "settings";
 
 interface NavItem {
   section: Section;
   label: string;
   href: string;
   icon: ReactNode;
+  adminOnly?: boolean;
 }
 
 const ICON_PROPS = {
@@ -71,6 +72,18 @@ const NAV_ITEMS: NavItem[] = [
       </svg>
     ),
   },
+  {
+    section: "settings",
+    label: "Settings",
+    href: "#/settings",
+    adminOnly: true,
+    icon: (
+      <svg {...ICON_PROPS}>
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+      </svg>
+    ),
+  },
 ];
 
 /** Detail pages highlight their parent section (a monitor lives under Websites). */
@@ -80,12 +93,13 @@ function sectionOf(route: Route): Section {
   return route.page;
 }
 
-export function Sidebar({ route }: { route: Route }) {
+export function Sidebar({ route, isAdmin }: { route: Route; isAdmin: boolean }) {
   const active = sectionOf(route);
+  const items = NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin);
   return (
     <nav className="sidenav" aria-label="Main navigation">
       <ul className="sidenav__list">
-        {NAV_ITEMS.map((item) => {
+        {items.map((item) => {
           const isActive = item.section === active;
           return (
             <li key={item.section}>

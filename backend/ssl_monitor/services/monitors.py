@@ -1,23 +1,24 @@
 """Website-monitor service — plain functions over the uptime and catalog ports.
 
-Validation, the customer/group ownership rules, and the state rules for edits
-(which changes reset the monitor's up/down state) live here, so the API and any
-future Lambda handler share them. No web framework here.
+The customer/group ownership rules and the state rules for edits (which changes
+reset the monitor's up/down state) live here, field validation in
+monitor_validation, so the API and any future Lambda handler share them. No web
+framework here.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
 from ..adapters.storage.base import CatalogRepoPort, UptimeRepoPort
+from ..core.alert_models import AlertTiming
+from ..core.alert_policy import effective_timing
 from ..core.catalog_models import Customer, MonitorGroup
 from ..core.uptime_models import (
     ALLOWED_INTERVAL_SECONDS,
-    MAX_TIMEOUT_SECONDS,
-    MIN_TIMEOUT_SECONDS,
     CheckResult,
     CloseReason,
     Incident,
@@ -25,16 +26,8 @@ from ..core.uptime_models import (
     MonitorState,
 )
 from .errors import CustomerNotFound, GroupNotFound, InvalidMonitor, MonitorNotFound
+from .monitor_validation import UrlCheck, clean_fields
 
-# url -> normalised url; raises InvalidMonitor / BlockedTarget (see url_policy).
-UrlCheck = Callable[[str], str]
-
-MAX_NAME_LENGTH = 200
-MAX_KEYWORD_LENGTH = 200
-EDITABLE_FIELDS = (
-    "name", "url", "interval_seconds", "timeout_seconds", "expected_status",
-    "keyword", "group_id", "customer_id",
-)
 # Changing what "up" means invalidates the current state and closes any open incident.
 _TARGET_FIELDS = frozenset({"url", "expected_status", "keyword", "timeout_seconds"})
 _OWNER_FIELDS = ("group_id", "customer_id")
@@ -51,74 +44,7 @@ class MonitorView:
     down_since: datetime | None
     customer_name: str | None
     group_name: str | None
-
-
-# ── Validation ───────────────────────────────────────────────────
-
-
-def _clean_name(value: Any) -> str:
-    name = (value or "").strip() if isinstance(value, str) else ""
-    if not name:
-        raise InvalidMonitor("name must not be blank")
-    if len(name) > MAX_NAME_LENGTH:
-        raise InvalidMonitor(f"name must be at most {MAX_NAME_LENGTH} characters")
-    return name
-
-
-def _clean_interval(value: Any) -> int:
-    if value not in ALLOWED_INTERVAL_SECONDS:
-        allowed = ", ".join(str(v) for v in ALLOWED_INTERVAL_SECONDS)
-        raise InvalidMonitor(f"interval_seconds must be one of {allowed}")
-    return value
-
-
-def _clean_timeout(value: Any) -> int:
-    if not isinstance(value, int) or not MIN_TIMEOUT_SECONDS <= value <= MAX_TIMEOUT_SECONDS:
-        raise InvalidMonitor(
-            f"timeout_seconds must be between {MIN_TIMEOUT_SECONDS} and {MAX_TIMEOUT_SECONDS}"
-        )
-    return value
-
-
-def _clean_expected_status(value: Any) -> int:
-    if not isinstance(value, int) or not 100 <= value <= 599:
-        raise InvalidMonitor("expected_status must be between 100 and 599")
-    return value
-
-
-def _clean_keyword(value: Any) -> str | None:
-    """Trimmed keyword; blank means "no keyword"."""
-    value = value.strip() if isinstance(value, str) else value
-    if not value:
-        return None
-    if len(value) > MAX_KEYWORD_LENGTH:
-        raise InvalidMonitor(f"keyword must be at most {MAX_KEYWORD_LENGTH} characters")
-    return value
-
-
-def _same(value: Any) -> Any:
-    return value
-
-
-_CLEANERS: dict[str, Callable[[Any], Any]] = {
-    "name": _clean_name,
-    "interval_seconds": _clean_interval,
-    "timeout_seconds": _clean_timeout,
-    "expected_status": _clean_expected_status,
-    "keyword": _clean_keyword,
-    "group_id": _same,
-    "customer_id": _same,
-}
-
-
-def _clean(fields: Mapping[str, Any], check_url: UrlCheck) -> dict[str, Any]:
-    unknown = set(fields) - set(EDITABLE_FIELDS)
-    if unknown:
-        raise InvalidMonitor(f"unknown field(s): {', '.join(sorted(unknown))}")
-    cleaned = {k: _CLEANERS[k](v) for k, v in fields.items() if k != "url"}
-    if "url" in fields:
-        cleaned["url"] = check_url(fields["url"])
-    return cleaned
+    timing: AlertTiming  # the alert timing in force (monitor override, else default)
 
 
 # ── Ownership (customer / group) ─────────────────────────────────
@@ -179,7 +105,11 @@ def monitor_status(monitor: Monitor) -> str:
 
 
 def describe_monitors(
-    repo: UptimeRepoPort, catalog: CatalogRepoPort, monitors: list[Monitor], now: datetime
+    repo: UptimeRepoPort,
+    catalog: CatalogRepoPort,
+    monitors: list[Monitor],
+    now: datetime,
+    alert_defaults: AlertTiming,
 ) -> list[MonitorView]:
     counts = repo.uptime_counts(
         now - UPTIME_WINDOW, monitor_ids=[m.id for m in monitors]
@@ -194,6 +124,11 @@ def describe_monitors(
             down_since=m.first_failure_at if monitor_status(m) == "down" else None,
             customer_name=customers.get(m.customer_id),
             group_name=groups.get(m.group_id),
+            timing=effective_timing(
+                m,
+                default_reminder_minutes=alert_defaults.reminder_minutes,
+                default_alert_delay_minutes=alert_defaults.alert_delay_minutes,
+            ),
         )
         for m in monitors
     ]
@@ -238,7 +173,7 @@ def prepare_monitor(
     for required in ("name", "url"):
         if required not in given:
             raise InvalidMonitor(f"{required} is required")
-    values = _clean(given, check_url)
+    values = clean_fields(given, check_url)
     group_id, customer_id = _resolve_owner(
         catalog, values.pop("group_id", None), values.pop("customer_id", None),
         customer_given="customer_id" in given,
@@ -268,9 +203,10 @@ def update_monitor(
     now: datetime,
 ) -> Monitor:
     """Apply a partial edit. Target changes reset state and close the open incident
-    ("edited"); an interval change only reschedules; name/owner changes do neither."""
+    ("edited"); an interval change only reschedules; name/owner/alert-setting changes
+    do neither."""
     current = get_monitor(repo, monitor_id)
-    values = _clean(fields, check_url)
+    values = clean_fields(fields, check_url)
     if any(f in fields for f in _OWNER_FIELDS):
         values["group_id"], values["customer_id"] = _resolve_owner(
             catalog,
@@ -282,6 +218,8 @@ def update_monitor(
     retarget = bool(_TARGET_FIELDS & changed.keys())
     if retarget or "interval_seconds" in changed:
         changed["next_check_at"] = now
+    if changed.get("alerts_enabled") is True:
+        changed["alerts_enabled_at"] = now
     return _change(
         repo, monitor_id, changed, now=now,
         reset_state=retarget, close_reason=CloseReason.EDITED if retarget else None,

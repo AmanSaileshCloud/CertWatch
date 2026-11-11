@@ -65,6 +65,10 @@ class Monitor:
     last_error: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    alerts_enabled: bool = True
+    reminder_minutes: int | None = None  # None = global default (UPTIME_REMINDER_MINUTES)
+    alert_delay_minutes: int | None = None  # None = global default (UPTIME_ALERT_DELAY_MINUTES)
+    alerts_enabled_at: datetime | None = None  # when alerts were last switched back on
 
 
 @dataclass(frozen=True)
@@ -122,6 +126,8 @@ class Incident:
     down_alert_sent_at: datetime | None = None
     recovery_alert_sent_at: datetime | None = None
     close_reason: CloseReason | None = None
+    last_reminder_sent_at: datetime | None = None
+    reminder_count: int = 0
 
     @property
     def is_open(self) -> bool:

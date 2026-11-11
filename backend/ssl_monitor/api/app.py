@@ -43,7 +43,15 @@ from ..services.domains import (
     update_domain,
 )
 from ..auth.rate_limit import LoginLimiter
-from .routers import customers, get_stores, groups, install_error_handlers, monitors
+from .routers import (
+    alerts,
+    customers,
+    get_stores,
+    groups,
+    install_error_handlers,
+    monitors,
+    settings as settings_router,
+)
 from .dependencies import (
     get_app_settings,
     get_cert_prober,
@@ -129,12 +137,13 @@ app = FastAPI(title="SSL Expiry Dashboard API", version="0.1.0", lifespan=lifesp
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
 install_error_handlers(app)
-for _router in (customers.router, groups.router, monitors.router):
+for _router in (customers.router, groups.router, monitors.router, alerts.router,
+                settings_router.router):
     app.include_router(_router)
 
 

@@ -1,6 +1,8 @@
+import { useState } from "react";
 import type { Customer, GroupSummary } from "../../types";
 import { navigate } from "../../hooks/useHashRoute";
 import { plural } from "../../lib/format";
+import { AlertRecipientsEditor } from "../alerts/AlertRecipientsEditor";
 import { HealthLight } from "./groupsUi";
 
 type Props = {
@@ -57,7 +59,35 @@ export function CustomerSection({ customer, groups, onAddGroup, onEdit, onDelete
           ))}
         </ul>
       )}
+
+      <CustomerAlerts customerId={customer.id} />
     </article>
+  );
+}
+
+/** Collapsible alert recipients for every website of this customer; rules load on first open. */
+function CustomerAlerts({ customerId }: { customerId: number }) {
+  const [open, setOpen] = useState(false);
+  const panelId = `customer-alerts-${customerId}`;
+  return (
+    <div className="grp-alerts">
+      <button
+        type="button"
+        className="grp-alerts__toggle"
+        aria-expanded={open}
+        aria-controls={panelId}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className={`grp-alerts__chev ${open ? "is-open" : ""}`} aria-hidden="true">›</span>
+        Alert recipients
+      </button>
+      {open && (
+        <div id={panelId} className="grp-alerts__body">
+          <p className="grp-hint">Emailed when any of this customer’s websites goes down or recovers.</p>
+          <AlertRecipientsEditor scope={{ customer_id: customerId }} showKinds />
+        </div>
+      )}
+    </div>
   );
 }
 

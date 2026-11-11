@@ -8,12 +8,15 @@ from dataclasses import replace
 
 import pytest
 from alembic import command
-from sqlalchemy import create_engine, delete, func, select, text
+from sqlalchemy import create_engine, delete, func, inspect, select, text
+from sqlalchemy.exc import IntegrityError
 
 from backend.ssl_monitor.adapters.db.tables import check_results, incidents, monitors
 from backend.ssl_monitor.adapters.storage import uptime_postgres
 from backend.ssl_monitor.adapters.storage.base import UptimeRepoPort
+from backend.ssl_monitor.adapters.storage.catalog_postgres import PostgresCatalogRepo
 from backend.ssl_monitor.adapters.storage.uptime_postgres import PostgresUptimeRepo
+from backend.ssl_monitor.core.alert_models import AlertKind
 from backend.ssl_monitor.core.incident_rules import evaluate
 from backend.ssl_monitor.services.uptime_checker import run_cycle
 from backend.ssl_monitor.core.uptime_models import (
@@ -630,3 +633,166 @@ def test_migration_0004_backfills_close_reason_for_resolved_incidents(pg, pg_url
 
     by_id = {i.id: i.close_reason for i in PostgresUptimeRepo(pg).list_incidents()}
     assert by_id == {1: CloseReason.RECOVERED, 2: None}
+
+
+# --- Step 4: alert fields, alert candidates, mark_alert_sent --------------------------
+
+LATER = NOW + dt.timedelta(hours=1)
+
+
+def _open(repo, name: str = "site", *, started: int = -120, **monitor_fields):
+    monitor = repo.add_monitor(_monitor(name, **monitor_fields))
+    [incident] = _record(repo, [_went_down(monitor.id, started=started)])
+    return monitor, incident
+
+
+def _closed(repo, name: str = "site", *, started: int = -120, **monitor_fields):
+    monitor, _ = _open(repo, name, started=started, **monitor_fields)
+    [incident] = _record(repo, [_recovered(monitor.id, seconds=60)])
+    return monitor, incident
+
+
+def _candidate_ids(repo, now=LATER) -> list[int]:
+    return [c.incident.id for c in repo.alert_candidates(now)]
+
+
+def test_new_monitor_alert_fields_default_and_round_trip(pg):
+    repo = PostgresUptimeRepo(pg)
+    plain = repo.add_monitor(_monitor("plain"))
+    tuned = repo.add_monitor(_monitor("tuned", alerts_enabled=False, reminder_minutes=60,
+                                      alert_delay_minutes=5))
+
+    assert (plain.alerts_enabled, plain.reminder_minutes, plain.alert_delay_minutes) == (
+        True, None, None)
+    assert (tuned.alerts_enabled, tuned.reminder_minutes, tuned.alert_delay_minutes) == (
+        False, 60, 5)
+    assert repo.get_monitor(tuned.id) == tuned
+
+
+def test_change_monitor_sets_alert_fields(pg):
+    repo = PostgresUptimeRepo(pg)
+    added = repo.add_monitor(_monitor(reminder_minutes=60))
+
+    changed = repo.change_monitor(added.id, {"alerts_enabled": False, "reminder_minutes": None,
+                                             "alert_delay_minutes": 30}, now=NOW)
+
+    assert (changed.alerts_enabled, changed.reminder_minutes, changed.alert_delay_minutes) == (
+        False, None, 30)
+    assert repo.get_monitor(added.id) == changed
+
+
+@pytest.mark.parametrize("field", ["reminder_minutes", "alert_delay_minutes"])
+def test_schema_rejects_alert_minutes_outside_the_allowed_list(pg, field):
+    with pytest.raises(IntegrityError):
+        PostgresUptimeRepo(pg).add_monitor(_monitor(**{field: 7}))
+
+
+def test_new_incident_has_no_reminders(pg):
+    _, incident = _open(PostgresUptimeRepo(pg))
+    assert (incident.last_reminder_sent_at, incident.reminder_count) == (None, 0)
+
+
+def test_alert_candidates_are_open_and_unnotified_recently_closed_oldest_first(pg):
+    repo = PostgresUptimeRepo(pg)
+    _, still_down = _open(repo, "down", started=-60)
+    _, recovered = _closed(repo, "back", started=-600)
+    _, tie = _open(repo, "tie", started=-60)
+
+    assert _candidate_ids(repo) == [recovered.id, still_down.id, tie.id]
+
+
+def test_alert_candidates_carry_current_incident_and_monitor(pg):
+    repo = PostgresUptimeRepo(pg)
+    monitor, incident = _open(repo, reminder_minutes=15)
+    repo.mark_alert_sent(incident.id, AlertKind.DOWN, NOW)
+
+    [candidate] = repo.alert_candidates(LATER)
+
+    assert candidate.monitor == repo.get_monitor(monitor.id)
+    assert candidate.incident == repo.list_incidents(monitor.id)[0]
+    assert candidate.incident.down_alert_sent_at == NOW
+
+
+def test_alert_candidates_skip_closed_once_recovery_was_sent(pg):
+    repo = PostgresUptimeRepo(pg)
+    _, closed = _closed(repo)
+    repo.mark_alert_sent(closed.id, AlertKind.RECOVERED, LATER)
+    assert _candidate_ids(repo) == []
+
+
+def test_alert_candidates_skip_closed_outside_the_window(pg):
+    repo = PostgresUptimeRepo(pg)
+    _, closed = _closed(repo, "back")
+    _, still_down = _open(repo, "down")
+    resolved = closed.resolved_at
+
+    assert _candidate_ids(repo, resolved + dt.timedelta(hours=24)) == [closed.id, still_down.id]
+    assert _candidate_ids(repo, resolved + dt.timedelta(hours=24, seconds=1)) == [still_down.id]
+
+
+def test_alert_candidates_skip_monitors_with_alerts_disabled(pg):
+    repo = PostgresUptimeRepo(pg)
+    monitor, incident = _open(repo, alerts_enabled=False)
+    assert _candidate_ids(repo) == []
+
+    repo.change_monitor(monitor.id, {"alerts_enabled": True}, now=NOW)
+    assert _candidate_ids(repo) == [incident.id]
+
+
+def test_alert_candidates_carry_customer_and_group_names(pg):
+    catalog = PostgresCatalogRepo(pg)
+    acme = catalog.add_customer("Acme")
+    web = catalog.add_group(acme.id, "Web")
+    repo = PostgresUptimeRepo(pg)
+    _open(repo, "grouped", started=-300, customer_id=acme.id, group_id=web.id)
+    _open(repo, "customer", started=-200, customer_id=acme.id)
+    _open(repo, "loose", started=-100)
+
+    names = [(c.monitor.name, c.customer_name, c.group_name)
+             for c in repo.alert_candidates(LATER)]
+
+    assert names == [("grouped", "Acme", "Web"), ("customer", "Acme", None),
+                     ("loose", None, None)]
+
+
+def test_mark_alert_sent_records_each_kind(pg):
+    repo = PostgresUptimeRepo(pg)
+    monitor, incident = _open(repo)
+    first, second = NOW + dt.timedelta(minutes=30), NOW + dt.timedelta(minutes=60)
+
+    repo.mark_alert_sent(incident.id, AlertKind.DOWN, NOW)
+    repo.mark_alert_sent(incident.id, AlertKind.REMINDER, first)
+    repo.mark_alert_sent(incident.id, AlertKind.REMINDER, second)
+    repo.mark_alert_sent(incident.id, AlertKind.RECOVERED, LATER)
+
+    assert repo.list_incidents(monitor.id) == [replace(
+        incident, down_alert_sent_at=NOW, last_reminder_sent_at=second, reminder_count=2,
+        recovery_alert_sent_at=LATER)]
+
+
+def test_mark_alert_sent_ignores_test_alerts_and_unknown_incidents(pg):
+    repo = PostgresUptimeRepo(pg)
+    monitor, incident = _open(repo)
+
+    repo.mark_alert_sent(incident.id, AlertKind.TEST, NOW)
+    repo.mark_alert_sent(999, AlertKind.DOWN, NOW)
+
+    assert repo.list_incidents(monitor.id) == [incident]
+
+
+def test_migration_0005_downgrade_and_upgrade_round_trip(pg, pg_url):
+    config = _alembic_config(pg_url)
+    command.downgrade(config, "0004")
+    try:
+        columns = {c["name"] for c in inspect(pg).get_columns("monitors")}
+        assert "alerts_enabled" not in columns
+        with pg.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO monitors (id, name, url, interval_seconds) "
+                "VALUES (1, 'a', 'https://a.example.com', 60)"))
+    finally:
+        command.upgrade(config, "head")
+
+    kept = PostgresUptimeRepo(pg).get_monitor(1)
+    assert (kept.alerts_enabled, kept.reminder_minutes, kept.alert_delay_minutes) == (
+        True, None, None)

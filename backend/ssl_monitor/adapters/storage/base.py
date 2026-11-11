@@ -8,9 +8,12 @@ wiring layer do.
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Mapping, Sequence
+from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
+from ...core.alert_models import AlertCandidate, AlertKind, AlertRule
+from ...core.app_settings_models import StoredSettings
 from ...core.catalog_models import Customer, MonitorGroup
 from ...core.models import DomainRecord
 from ...core.uptime_models import CheckResult, CloseReason, Incident, Monitor, MonitorTransition
@@ -127,6 +130,28 @@ class UptimeRepoPort(Protocol):
         checks in the window are absent."""
         ...
 
+    def alert_candidates(self, now: datetime) -> list[AlertCandidate]:
+        """Incidents that MAY need an alert, for monitors with ``alerts_enabled``:
+        every open incident, plus incidents resolved within the last
+        ``RECENTLY_CLOSED_WINDOW_HOURS`` whose ``recovery_alert_sent_at`` is NULL.
+        Each carries its monitor and the customer/group names (one query, no N+1).
+        The alert policy decides which of them are actually due."""
+        ...
+
+    def mark_alert_sent(self, incident_id: int, kind: AlertKind, at: datetime) -> None:
+        """Record a sent alert: DOWN → down_alert_sent_at; REMINDER →
+        last_reminder_sent_at and reminder_count + 1; RECOVERED → recovery_alert_sent_at.
+        TEST is never recorded. Unknown incident → no-op."""
+        ...
+
+    def alert_dispatch_lock(self) -> AbstractContextManager[bool]:
+        """A context manager guarding one alert-dispatch run across ALL workers; it
+        yields True if this caller holds the lock for the ``with`` block, False if
+        another worker is dispatching right now (skip this run). Never blocks, and the
+        lock is always released when the block exits. In-process stores (one worker)
+        always yield True."""
+        ...
+
 
 class DuplicateNameError(ValueError):
     """A customer or group name is already taken (names are unique per scope)."""
@@ -173,4 +198,43 @@ class CatalogRepoPort(Protocol):
         ...
 
     def delete_group(self, group_id: int) -> bool:
+        ...
+
+    def list_alert_rules(
+        self, *, customer_id: int | None = None, monitor_id: int | None = None
+    ) -> list[AlertRule]:
+        """Rules for exactly that scope (both None = global rules), ordered by target."""
+        ...
+
+    def add_alert_rule(self, rule: AlertRule) -> AlertRule:
+        """Insert (``rule.id`` ignored). Exactly one of customer_id / monitor_id, or
+        neither (global). Raises DuplicateNameError if the same target already exists
+        for that scope."""
+        ...
+
+    def update_alert_rule(self, rule_id: int, values: Mapping[str, Any]) -> AlertRule | None:
+        """``values`` may hold on_down / on_recovery / enabled. Unknown field → ValueError."""
+        ...
+
+    def delete_alert_rule(self, rule_id: int) -> bool:
+        ...
+
+    def recipients_for(self, monitor: Monitor, kind: AlertKind) -> list[str]:
+        """Enabled EMAIL rule targets that apply to ``monitor`` for ``kind``: global +
+        its customer's + its own; DOWN/REMINDER need on_down, RECOVERED needs
+        on_recovery, TEST takes all. Lower-cased, de-duplicated, sorted."""
+        ...
+
+
+@runtime_checkable
+class SettingsStorePort(Protocol):
+    """Key/value settings saved from the admin UI (values are JSON-serialisable)."""
+
+    def load(self) -> StoredSettings:
+        """All saved values, plus the most recent updated_at / updated_by."""
+        ...
+
+    def save(self, changes: Mapping[str, Any], *, updated_by: str, now: datetime) -> None:
+        """Upsert each key; a value of None DELETES the key (falls back to env).
+        All changes in one transaction."""
         ...

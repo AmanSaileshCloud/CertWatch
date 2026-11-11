@@ -12,6 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from ..core.alert_models import AlertRule
 from ..core.uptime_models import CheckResult, Incident
 from ..services.catalog import CustomerView, GroupDetail, GroupSummary, MemberResult
 from ..services.monitors import MonitorView
@@ -62,6 +63,9 @@ class MonitorIn(BaseModel):
     keyword: str | None = None
     group_id: int | None = None
     customer_id: int | None = None
+    alerts_enabled: bool = True
+    reminder_minutes: int | None = None  # null = global default
+    alert_delay_minutes: int | None = None  # null = global default
 
 
 class MonitorPatch(BaseModel):
@@ -73,6 +77,9 @@ class MonitorPatch(BaseModel):
     keyword: str | None = None
     group_id: int | None = None
     customer_id: int | None = None
+    alerts_enabled: bool | None = None
+    reminder_minutes: int | None = None
+    alert_delay_minutes: int | None = None
 
 
 class MonitorOut(BaseModel):
@@ -97,6 +104,11 @@ class MonitorOut(BaseModel):
     uptime_24h: float | None
     down_since: datetime | None
     created_at: datetime | None
+    alerts_enabled: bool
+    reminder_minutes: int | None
+    alert_delay_minutes: int | None
+    effective_reminder_minutes: int
+    effective_alert_delay_minutes: int
 
     @classmethod
     def from_view(cls, view: MonitorView) -> MonitorOut:
@@ -111,6 +123,10 @@ class MonitorOut(BaseModel):
             last_checked_at=m.last_checked_at, last_status_code=m.last_status_code,
             last_response_ms=m.last_response_ms, last_error=m.last_error,
             uptime_24h=view.uptime_24h, down_since=view.down_since, created_at=m.created_at,
+            alerts_enabled=m.alerts_enabled, reminder_minutes=m.reminder_minutes,
+            alert_delay_minutes=m.alert_delay_minutes,
+            effective_reminder_minutes=view.timing.reminder_minutes,
+            effective_alert_delay_minutes=view.timing.alert_delay_minutes,
         )
 
 
@@ -136,6 +152,10 @@ class IncidentOut(BaseModel):
     duration_seconds: int | None
     reason: str | None
     close_reason: str | None
+    down_alert_sent_at: datetime | None
+    recovery_alert_sent_at: datetime | None
+    last_reminder_sent_at: datetime | None
+    reminder_count: int
 
     @classmethod
     def from_incident(cls, i: Incident) -> IncidentOut:
@@ -143,6 +163,9 @@ class IncidentOut(BaseModel):
             id=i.id, monitor_id=i.monitor_id, started_at=i.started_at,
             resolved_at=i.resolved_at, duration_seconds=i.duration_seconds, reason=i.reason,
             close_reason=i.close_reason.value if i.close_reason else None,
+            down_alert_sent_at=i.down_alert_sent_at,
+            recovery_alert_sent_at=i.recovery_alert_sent_at,
+            last_reminder_sent_at=i.last_reminder_sent_at, reminder_count=i.reminder_count,
         )
 
 
@@ -212,3 +235,49 @@ class AddMemberOut(BaseModel):
     def from_result(cls, result: MemberResult, monitor: MonitorOut | None) -> AddMemberOut:
         domain = DomainOut.from_record(result.domain) if result.domain else None
         return cls(domain=domain, monitor=monitor, messages=result.messages)
+
+
+# ── Alerts ───────────────────────────────────────────────────────
+
+
+class AlertSettingsOut(BaseModel):
+    default_recipients: list[str]
+    reminder_minutes: int
+    alert_delay_minutes: int
+    notifier: str
+    sender: str | None
+
+
+class AlertRuleIn(BaseModel):
+    target: str
+    channel: str = "email"
+    customer_id: int | None = None
+    monitor_id: int | None = None
+    on_down: bool = True
+    on_recovery: bool = True
+
+
+class AlertRulePatch(BaseModel):
+    on_down: bool | None = None
+    on_recovery: bool | None = None
+    enabled: bool | None = None
+
+
+class AlertRuleOut(BaseModel):
+    id: int
+    target: str
+    channel: str
+    customer_id: int | None
+    monitor_id: int | None
+    on_down: bool
+    on_recovery: bool
+    enabled: bool
+    created_at: datetime | None
+
+    @classmethod
+    def from_rule(cls, r: AlertRule) -> AlertRuleOut:
+        return cls(
+            id=r.id, target=r.target, channel=r.channel.value, customer_id=r.customer_id,
+            monitor_id=r.monitor_id, on_down=r.on_down, on_recovery=r.on_recovery,
+            enabled=r.enabled, created_at=r.created_at,
+        )

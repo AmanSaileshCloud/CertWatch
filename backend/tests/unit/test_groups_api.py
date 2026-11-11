@@ -47,6 +47,8 @@ def test_create_group_errors(api, shop):
     assert r.status_code == 409
     r = api.client.post("/groups", json={"customer_id": shop["customer_id"], "name": " "})
     assert r.status_code == 422
+    r = api.client.post("/groups", json={"customer_id": shop["customer_id"], "name": "A\tB"})
+    assert r.status_code == 422 and "control characters" in r.json()["detail"]
 
 
 def test_same_group_name_allowed_for_another_customer(api, shop):
@@ -73,6 +75,7 @@ def test_rename_group(api, shop):
     api.group(shop["customer_id"], "Blog")
     assert api.client.patch(f"/groups/{shop['id']}", json={"name": "Blog"}).status_code == 409
     assert api.client.patch(f"/groups/{shop['id']}", json={"name": ""}).status_code == 422
+    assert api.client.patch(f"/groups/{shop['id']}", json={"name": "A\nB"}).status_code == 422
     assert api.client.patch("/groups/99", json={"name": "x"}).status_code == 404
 
 

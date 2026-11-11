@@ -26,6 +26,9 @@ from sqlalchemy import (
     text,
 )
 
+from sqlalchemy.dialects.postgresql import JSONB
+
+from ...core.alert_models import ALLOWED_ALERT_DELAY_MINUTES, ALLOWED_REMINDER_MINUTES
 from ...core.uptime_models import (
     ALLOWED_INTERVAL_SECONDS,
     DEFAULT_REGION,
@@ -121,6 +124,16 @@ monitors = Table(
     Column("created_at", _tz(), nullable=False, server_default=func.now()),
     Column("updated_at", _tz(), nullable=False, server_default=func.now()),
     _group_column(),
+    Column("alerts_enabled", Boolean, nullable=False, server_default=text("true")),
+    Column("reminder_minutes", Integer),
+    Column("alert_delay_minutes", Integer),
+    Column("alerts_enabled_at", _tz()),
+    CheckConstraint("reminder_minutes IS NULL OR "
+                    + _in_list("reminder_minutes", ALLOWED_REMINDER_MINUTES),
+                    name="ck_monitors_reminder_minutes"),
+    CheckConstraint("alert_delay_minutes IS NULL OR "
+                    + _in_list("alert_delay_minutes", ALLOWED_ALERT_DELAY_MINUTES),
+                    name="ck_monitors_alert_delay_minutes"),
     CheckConstraint(_in_list("interval_seconds", ALLOWED_INTERVAL_SECONDS),
                     name="ck_monitors_interval"),
     CheckConstraint(
@@ -176,12 +189,15 @@ incidents = Table(
     Column("down_alert_sent_at", _tz()),
     Column("recovery_alert_sent_at", _tz()),
     Column("close_reason", Text),
+    Column("last_reminder_sent_at", _tz()),
+    Column("reminder_count", Integer, nullable=False, server_default="0"),
     CheckConstraint(
         "close_reason IS NULL OR " + _in_list("close_reason", [r.value for r in CloseReason]),
         name="ck_incidents_close_reason",
     ),
     Index("ix_incidents_monitor_started", "monitor_id", "started_at"),
     Index("ix_incidents_started", "started_at"),
+    Index("ix_incidents_resolved", "resolved_at"),
     Index("ux_incidents_one_open_per_monitor", "monitor_id", unique=True,
           postgresql_where=text("resolved_at IS NULL")),
 )
@@ -201,4 +217,21 @@ alert_rules = Table(
     CheckConstraint(_in_list("channel", [c.value for c in AlertChannel]),
                     name="ck_alert_rules_channel"),
     CheckConstraint("customer_id IS NULL OR monitor_id IS NULL", name="ck_alert_rules_scope"),
+)
+
+app_settings = Table(
+    "app_settings",
+    metadata,
+    Column("key", Text, primary_key=True),
+    Column("value", JSONB, nullable=False),
+    Column("updated_at", _tz(), nullable=False, server_default=func.now()),
+    Column("updated_by", Text),
+)
+
+Index(
+    "ux_alert_rules_scope_target",
+    func.coalesce(alert_rules.c.customer_id, 0),
+    func.coalesce(alert_rules.c.monitor_id, 0),
+    func.lower(alert_rules.c.target),
+    unique=True,
 )

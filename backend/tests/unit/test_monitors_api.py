@@ -6,6 +6,11 @@ import datetime as dt
 
 import pytest
 
+from backend.ssl_monitor.api.app import app
+from backend.ssl_monitor.api.dependencies import get_app_settings
+from backend.ssl_monitor.config.settings import Settings
+from backend.ssl_monitor.core.alert_models import AlertKind
+
 UTC = dt.timezone.utc
 
 
@@ -48,6 +53,8 @@ def test_empty_keyword_is_stored_as_null(api):
 @pytest.mark.parametrize("field, value, message", [
     ("name", "   ", "name must not be blank"),
     ("name", "x" * 201, "at most 200"),
+    ("name", "Shop\nBcc: evil@x.com", "control characters"),
+    ("name", "Shop\x1b[31m", "control characters"),
     ("url", "ftp://shop.acme.com", "http:// or https://"),
     ("url", "https://u:p@shop.acme.com", "username or password"),
     ("url", "https://shop.acme.com/" + "a" * 2000, "2000"),
@@ -96,10 +103,6 @@ def test_dns_failure_is_accepted(api):
 
 def test_private_targets_allowed_by_setting(api):
     from dataclasses import replace
-
-    from backend.ssl_monitor.api.dependencies import get_app_settings
-    from backend.ssl_monitor.api.app import app
-    from backend.ssl_monitor.config.settings import Settings
 
     settings = replace(Settings.from_env(env={}), uptime_allow_private_targets=True)
     app.dependency_overrides[get_app_settings] = lambda: settings
@@ -388,3 +391,89 @@ def test_delete_monitor(api):
     assert api.client.delete(f"/monitors/{monitor['id']}").status_code == 204
     assert api.client.get(f"/monitors/{monitor['id']}").status_code == 404
     assert api.client.delete(f"/monitors/{monitor['id']}").status_code == 404
+
+
+# ── Alert settings per monitor ───────────────────────────────────
+
+
+def test_new_monitor_alert_fields_default_to_global(api):
+    body = api.monitor()
+    assert body["alerts_enabled"] is True
+    assert body["reminder_minutes"] is None and body["alert_delay_minutes"] is None
+    assert body["effective_reminder_minutes"] == 30
+    assert body["effective_alert_delay_minutes"] == 0
+
+
+def test_create_monitor_with_alert_overrides(api):
+    body = api.monitor(alerts_enabled=False, reminder_minutes=0, alert_delay_minutes=15)
+    assert (body["alerts_enabled"], body["reminder_minutes"], body["alert_delay_minutes"]) == (
+        False, 0, 15)
+    assert (body["effective_reminder_minutes"], body["effective_alert_delay_minutes"]) == (0, 15)
+
+
+@pytest.mark.parametrize("field, value, message", [
+    ("reminder_minutes", 45, "reminder_minutes must be null or one of 0, 15, 30, 60, 120"),
+    ("reminder_minutes", -1, "reminder_minutes must be null"),
+    ("alert_delay_minutes", 7, "alert_delay_minutes must be null or one of 0, 5, 10, 15, 30"),
+])
+def test_alert_field_validation(api, field, value, message):
+    r = api.client.post("/monitors", json={"name": "Shop", "url": "https://shop.acme.com",
+                                           field: value})
+    assert r.status_code == 422
+    assert message in r.json()["detail"]
+    monitor = api.monitor()
+    r = api.client.patch(f"/monitors/{monitor['id']}", json={field: value})
+    assert r.status_code == 422
+
+
+def test_patch_alerts_enabled_null_is_422(api):
+    monitor = api.monitor()
+    r = api.client.patch(f"/monitors/{monitor['id']}", json={"alerts_enabled": None})
+    assert r.status_code == 422
+    assert "alerts_enabled must be true or false" in r.json()["detail"]
+
+
+def test_patch_alert_fields_keeps_state_and_open_incident(api):
+    monitor = api.monitor()
+    api.take_down(monitor["id"])
+    r = api.client.patch(f"/monitors/{monitor['id']}", json={
+        "alerts_enabled": False, "reminder_minutes": 120, "alert_delay_minutes": 5})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "down"
+    assert (body["effective_reminder_minutes"], body["effective_alert_delay_minutes"]) == (120, 5)
+    [incident] = api.client.get(f"/monitors/{monitor['id']}/incidents").json()
+    assert incident["resolved_at"] is None
+
+
+def test_patch_null_resets_to_global_default(api):
+    monitor = api.monitor(reminder_minutes=60)
+    r = api.client.patch(f"/monitors/{monitor['id']}", json={"reminder_minutes": None})
+    assert r.json()["reminder_minutes"] is None
+    assert r.json()["effective_reminder_minutes"] == 30
+
+
+def test_effective_values_follow_global_settings(api):
+    settings = Settings.from_env({"UPTIME_REMINDER_MINUTES": "15",
+                                  "UPTIME_ALERT_DELAY_MINUTES": "10"})
+    app.dependency_overrides[get_app_settings] = lambda: settings
+    body = api.monitor()
+    assert (body["effective_reminder_minutes"], body["effective_alert_delay_minutes"]) == (15, 10)
+
+
+def test_incident_alert_fields(api):
+    monitor = api.monitor()
+    api.take_down(monitor["id"])
+    [incident] = api.client.get(f"/monitors/{monitor['id']}/incidents").json()
+    assert incident["down_alert_sent_at"] is None
+    assert incident["recovery_alert_sent_at"] is None
+    assert incident["last_reminder_sent_at"] is None
+    assert incident["reminder_count"] == 0
+
+    sent_at = dt.datetime(2026, 1, 1, tzinfo=UTC)
+    api.repo.mark_alert_sent(incident["id"], AlertKind.DOWN, sent_at)
+    api.repo.mark_alert_sent(incident["id"], AlertKind.REMINDER, sent_at)
+    [incident] = api.client.get(f"/monitors/{monitor['id']}/incidents").json()
+    assert _parse(incident["down_alert_sent_at"]) == sent_at
+    assert _parse(incident["last_reminder_sent_at"]) == sent_at
+    assert incident["reminder_count"] == 1

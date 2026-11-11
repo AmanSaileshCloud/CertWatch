@@ -2,10 +2,12 @@
 
 Runs continuously as the certwatch-uptime systemd service. Three modes:
 
-  (no mode)        Loop forever: check every due monitor, wait out the rest of the
-                   tick (UPTIME_TICK_SECONDS), repeat. Ctrl-C / SIGTERM stops it
-                   promptly, cancelling an in-flight cycle.
-  --once           Run one check cycle against the configured store and exit.
+  (no mode)        Loop forever: check every due monitor, send the uptime alerts
+                   that are due, wait out the rest of the tick (UPTIME_TICK_SECONDS),
+                   repeat. Ctrl-C / SIGTERM stops it promptly, cancelling an
+                   in-flight cycle.
+  --once           Run one check cycle (and its alerts) against the configured
+                   store and exit.
   --check URL ...  Ad-hoc check of one or more URLs. Nothing is saved — handy
                    for a quick demo:  python -m backend.runner.run_uptime --check https://example.com
 
@@ -24,7 +26,7 @@ import logging
 import signal
 import sys
 import time
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 
 import httpx
@@ -33,12 +35,27 @@ from ..ssl_monitor.adapters.storage.base import UptimeRepoPort
 from ..ssl_monitor.config.settings import Settings
 from ..ssl_monitor.core.http_probe import make_http_client, probe_http
 from ..ssl_monitor.core.uptime_models import CheckResult, Monitor
-from ..ssl_monitor.handlers._deps import get_settings, make_uptime_repo
+from ..ssl_monitor.handlers._deps import (
+    get_settings,
+    make_alert_config,
+    make_catalog_repo,
+    make_email_notifier,
+    make_uptime_repo,
+)
+from ..ssl_monitor.services.uptime_alerts import (
+    AlertBackoff,
+    AlertSummary,
+    default_recipients,
+    dispatch_alerts,
+)
 from ..ssl_monitor.services.uptime_checker import CycleSummary, UptimeProbeFn, run_cycle
 
 logger = logging.getLogger("ssl_monitor.uptime.runner")
 
 ADHOC_INTERVAL_SECONDS = 60
+
+# Sends every uptime alert due at the given time (dispatch_alerts with its stores bound).
+AlertDispatch = Callable[..., AlertSummary]
 
 
 def _make_probe(client: httpx.AsyncClient, settings: Settings) -> UptimeProbeFn:
@@ -80,12 +97,48 @@ def _print_checks(results: list[tuple[str, CheckResult]]) -> None:
     print("-" * 90)
 
 
-def _print_summary(summary: CycleSummary) -> None:
+def _print_summary(summary: CycleSummary, alerts: AlertSummary | None) -> None:
     print(
         f"Checked {summary.checked} monitor(s) at {summary.checked_at.isoformat()}: "
         f"{summary.up} up, {summary.down} down; "
         f"{summary.went_down} went down, {summary.recovered} recovered"
     )
+    if alerts is None:
+        print("Alerts: dispatch failed (see the log)")
+    else:
+        deferred = f", {alerts.deferred} deferred" if alerts.deferred else ""
+        print(f"Alerts: {alerts.sent} sent, {alerts.failed} failed{deferred}")
+
+
+def make_alert_dispatch(settings: Settings, repo: UptimeRepoPort) -> AlertDispatch:
+    """Dispatch bound to this process's stores and backoff memory.
+
+    The alert/email configuration (Settings page → env → default) is re-read on every
+    run, so recipients or SES credentials changed in the UI apply without a restart.
+    Building it touches no database, so the worker starts even while Postgres is down.
+    """
+    catalog = make_catalog_repo(settings)
+    backoff = AlertBackoff()
+
+    def dispatch(*, now: datetime) -> AlertSummary:
+        config = make_alert_config(settings)
+        if not default_recipients(config) and backoff.first_warning("no-default-recipients"):
+            logger.warning("No default alert recipients (Settings page or ALERT_EMAIL / "
+                           "ALERT_RECIPIENTS): uptime alerts go only to alert-rule recipients")
+        notifier = make_email_notifier(config, settings)
+        return dispatch_alerts(repo, catalog, notifier, now=now, settings_like=config,
+                               backoff=backoff)
+
+    return dispatch
+
+
+def dispatch_safely(dispatch: AlertDispatch) -> AlertSummary | None:
+    """Send due alerts; a failure is logged (None returned) and never stops the worker."""
+    try:
+        return dispatch(now=_now())
+    except Exception:
+        logger.exception("Uptime alert dispatch failed (is the database up?)")
+        return None
 
 
 async def check_urls(
@@ -157,21 +210,43 @@ async def _sleep_until_next_tick(stop: asyncio.Event, seconds: float) -> None:
         pass
 
 
+def _start_dispatch(
+    running: asyncio.Future | None, dispatch: AlertDispatch
+) -> asyncio.Future:
+    """Send alerts in a background thread so slow email never delays the checks.
+    At most one dispatch runs at a time; a tick that finds one still sending skips."""
+    if running is not None and not running.done():
+        logger.debug("Uptime alert dispatch still running; skipping this tick")
+        return running
+    return asyncio.ensure_future(asyncio.to_thread(dispatch_safely, dispatch))
+
+
 async def run_forever(
-    settings: Settings, repo: UptimeRepoPort, stop: asyncio.Event | None = None
+    settings: Settings,
+    repo: UptimeRepoPort,
+    stop: asyncio.Event | None = None,
+    dispatch: AlertDispatch | None = None,
 ) -> None:
-    """Run a cycle every tick until stopped. A failing cycle is logged, not fatal."""
+    """Run a cycle every tick until stopped, sending due alerts (when ``dispatch`` is
+    given) alongside the next cycles. A failing cycle or dispatch is logged, not
+    fatal. On stop, an alert dispatch already sending is allowed to finish."""
     stop = stop or asyncio.Event()
     _install_sigterm(stop)
     tick = settings.uptime_tick_seconds
     logger.info("Uptime worker started: tick %ss (Ctrl-C to stop)", tick)
+    alerts: asyncio.Future | None = None
 
     async with _open_client(settings) as client:
         probe = _make_probe(client, settings)
         while not stop.is_set():
             started = time.monotonic()
             await _run_until_stopped(_cycle(settings, repo, probe), stop)
+            if dispatch is not None and not stop.is_set():
+                alerts = _start_dispatch(alerts, dispatch)
             await _sleep_until_next_tick(stop, tick - (time.monotonic() - started))
+    if alerts is not None and not alerts.done():
+        logger.info("Waiting for the alert dispatch in progress to finish...")
+        await alerts
     logger.info("Uptime worker stopped.")
 
 
@@ -209,10 +284,12 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         repo = make_uptime_repo(settings)
+        dispatch = make_alert_dispatch(settings, repo)
         if args.once:
-            _print_summary(asyncio.run(run_once(settings, repo)))
+            summary = asyncio.run(run_once(settings, repo))
+            _print_summary(summary, dispatch_safely(dispatch))
         else:
-            asyncio.run(run_forever(settings, repo))
+            asyncio.run(run_forever(settings, repo, dispatch=dispatch))
     except KeyboardInterrupt:
         logger.info("Stopped.")
     except Exception as exc:

@@ -76,13 +76,18 @@ if [ ! -f "$ENV_FILE" ]; then
   # placeholder secret, so this substitution is what keeps setup.sh working.
   GENERATED_SECRET="$(openssl rand -hex 32)"
   GENERATED_ADMIN_PW="$(openssl rand -base64 18 | tr -d '/+=' | cut -c1-20)"
+  # Encrypts the SES SMTP password saved on the Settings page (losing it only
+  # means re-entering that password).
+  GENERATED_SETTINGS_KEY="$("$VENV_DIR/bin/python" -c \
+    "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")"
   sed -i \
     -e "s|^AUTH_SECRET=.*|AUTH_SECRET=${GENERATED_SECRET}|" \
     -e "s|^AUTH_BOOTSTRAP_PASSWORD=.*|AUTH_BOOTSTRAP_PASSWORD=${GENERATED_ADMIN_PW}|" \
+    -e "s|^SETTINGS_ENCRYPTION_KEY=.*|SETTINGS_ENCRYPTION_KEY=${GENERATED_SETTINGS_KEY}|" \
     "$ENV_FILE"
 
   GENERATED_CREDS=1
-  echo "    Created $ENV_FILE with freshly generated AUTH_SECRET + admin password."
+  echo "    Created $ENV_FILE with freshly generated AUTH_SECRET, SETTINGS_ENCRYPTION_KEY + admin password."
   echo "    Still to edit by hand: SNS_TOPIC_ARN and ALERT_EMAIL."
 else
   GENERATED_CREDS=0

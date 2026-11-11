@@ -37,3 +37,11 @@ class InvalidMonitor(InvalidInput):
 
 class BlockedTarget(InvalidMonitor):
     """The URL points at a private/internal address (SSRF guard)."""
+
+
+class AlertRuleNotFound(NotFound):
+    pass
+
+
+class InvalidSetting(InvalidInput):
+    """A value sent to the admin Settings page is not acceptable."""

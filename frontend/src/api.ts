@@ -2,6 +2,10 @@ import type {
   AddMemberInput,
   AddMemberResult,
   AdminUser,
+  AlertRule,
+  AlertSettings,
+  AlertSettingsAdmin,
+  AlertSettingsUpdate,
   CheckRecord,
   Customer,
   GroupDetail,
@@ -23,7 +27,14 @@ import type {
 const BASE = (import.meta.env.VITE_API_URL ?? import.meta.env.VITE_API_BASE ?? "").replace(/\/$/, "");
 const TOKEN_KEY = "certwatch_token";
 
-export class ApiError extends Error {}
+export class ApiError extends Error {
+  /** HTTP status, or undefined when the API couldn't be reached. */
+  readonly status?: number;
+  constructor(message: string, status?: number) {
+    super(message);
+    this.status = status;
+  }
+}
 
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
@@ -69,9 +80,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // Token missing/expired — drop it and let the app fall back to login.
     clearToken();
     window.dispatchEvent(new Event("auth:unauthorized"));
-    throw new ApiError(await errorMessage(res));
+    throw new ApiError(await errorMessage(res), res.status);
   }
-  if (!res.ok) throw new ApiError(await errorMessage(res));
+  if (!res.ok) throw new ApiError(await errorMessage(res), res.status);
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
@@ -173,6 +184,34 @@ export const api = {
     request<CheckRecord[]>(`/monitors/${id}/series${query({ hours })}`),
   listMonitorIncidents: (id: number, limit = 50) =>
     request<IncidentRecord[]>(`/monitors/${id}/incidents${query({ limit })}`),
+
+  testMonitorAlert: (id: number) =>
+    request<MessageResponse>(`/monitors/${id}/test-alert`, { method: "POST" }),
+
+  // ── Alerts ──
+  getAlertSettings: () => request<AlertSettings>("/alerts/settings"),
+  listAlertRules: (scope: { customer_id?: number; monitor_id?: number }) =>
+    request<AlertRule[]>(`/alert-rules${query(scope)}`),
+  addAlertRule: (payload: {
+    target: string;
+    customer_id?: number;
+    monitor_id?: number;
+    on_down?: boolean;
+    on_recovery?: boolean;
+  }) => request<AlertRule>("/alert-rules", { method: "POST", body: JSON.stringify(payload) }),
+  updateAlertRule: (id: number, payload: { on_down?: boolean; on_recovery?: boolean; enabled?: boolean }) =>
+    request<AlertRule>(`/alert-rules/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteAlertRule: (id: number) => request<void>(`/alert-rules/${id}`, { method: "DELETE" }),
+
+  // ── Admin settings ──
+  getAdminAlertSettings: () => request<AlertSettingsAdmin>("/settings/alerts"),
+  updateAdminAlertSettings: (payload: AlertSettingsUpdate) =>
+    request<AlertSettingsAdmin>("/settings/alerts", { method: "PUT", body: JSON.stringify(payload) }),
+  sendSettingsTestEmail: (to: string) =>
+    request<MessageResponse>("/settings/alerts/test-email", {
+      method: "POST",
+      body: JSON.stringify({ to }),
+    }),
 
   // ── Customers ──
   listCustomers: () => request<Customer[]>("/customers"),

@@ -126,7 +126,18 @@ export interface MonitorRecord {
   /** When the current outage started (only while status is "down"). */
   down_since: string | null;
   created_at: string;
+  alerts_enabled: boolean;
+  /** null = use the global default (see effective_*). */
+  reminder_minutes: ReminderMinutes | null;
+  alert_delay_minutes: AlertDelayMinutes | null;
+  effective_reminder_minutes: ReminderMinutes;
+  effective_alert_delay_minutes: AlertDelayMinutes;
 }
+
+/** Repeat "still down" emails every N minutes; 0 = no reminders. */
+export type ReminderMinutes = 0 | 15 | 30 | 60 | 120;
+/** Only alert once a site has been down this many minutes. */
+export type AlertDelayMinutes = 0 | 5 | 10 | 15 | 30;
 
 export interface MonitorInput {
   name: string;
@@ -137,6 +148,9 @@ export interface MonitorInput {
   keyword: string | null;
   group_id: number | null;
   customer_id: number | null;
+  alerts_enabled: boolean;
+  reminder_minutes: ReminderMinutes | null;
+  alert_delay_minutes: AlertDelayMinutes | null;
 }
 
 export interface CheckRecord {
@@ -158,6 +172,30 @@ export interface IncidentRecord {
   duration_seconds: number | null;
   reason: string | null;
   close_reason: CloseReason | null;
+  down_alert_sent_at: string | null;
+  recovery_alert_sent_at: string | null;
+  last_reminder_sent_at: string | null;
+  reminder_count: number;
+}
+
+export interface AlertRule {
+  id: number;
+  target: string;
+  channel: "email";
+  customer_id: number | null;
+  monitor_id: number | null;
+  on_down: boolean;
+  on_recovery: boolean;
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface AlertSettings {
+  default_recipients: string[];
+  reminder_minutes: ReminderMinutes;
+  alert_delay_minutes: AlertDelayMinutes;
+  notifier: "console" | "sns_ses";
+  sender: string | null;
 }
 
 export interface AddMemberInput {
@@ -171,4 +209,45 @@ export interface AddMemberResult {
   domain: DomainRecord | null;
   monitor: MonitorRecord | null;
   messages: string[];
+}
+
+// ── Admin settings: alert recipients + SES email delivery ───────────────────
+
+export type EmailTransport = "iam_role" | "smtp";
+
+export interface AlertSettingsAdmin {
+  sender: string | null;
+  default_recipients: string[];
+  reminder_minutes: ReminderMinutes;
+  alert_delay_minutes: AlertDelayMinutes;
+  /** true = value saved in the UI; false = coming from the server environment. */
+  saved: { sender: boolean; default_recipients: boolean; reminder_minutes: boolean; alert_delay_minutes: boolean };
+  env_defaults: {
+    sender: string | null;
+    default_recipients: string[];
+    reminder_minutes: ReminderMinutes;
+    alert_delay_minutes: AlertDelayMinutes;
+  };
+  transport: EmailTransport;
+  aws_region: string;
+  smtp_host: string | null;
+  smtp_port: number;
+  smtp_username: string | null;
+  smtp_password_set: boolean;
+  encryption_available: boolean;
+  updated_at: string | null;
+  updated_by: string | null;
+}
+
+/** PUT body: omit a field = unchanged; null = clear (fall back to env / remove password). */
+export interface AlertSettingsUpdate {
+  sender?: string | null;
+  default_recipients?: string[] | null;
+  reminder_minutes?: ReminderMinutes | null;
+  alert_delay_minutes?: AlertDelayMinutes | null;
+  transport?: EmailTransport;
+  smtp_host?: string | null;
+  smtp_port?: number;
+  smtp_username?: string | null;
+  smtp_password?: string | null;
 }

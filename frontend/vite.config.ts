@@ -21,6 +21,9 @@ export default defineConfig({
       "/monitors":  DEV_API,
       "/customers": DEV_API,
       "/groups":    DEV_API,
+      "/alerts":      DEV_API,
+      "/alert-rules": DEV_API,
+      "/settings":    DEV_API,
     },
   },
   define: {

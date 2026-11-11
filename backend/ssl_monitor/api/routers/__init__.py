@@ -11,15 +11,19 @@ from fastapi.responses import JSONResponse
 
 from ...adapters.storage.base import CatalogRepoPort, DuplicateNameError, StoragePort, UptimeRepoPort
 from ...config.settings import Settings
+from ...core.alert_models import AlertTiming
+from ...core.app_settings_models import AlertConfig
 from ...core.models import DomainRecord
 from ...core.uptime_models import Monitor
 from ...services.catalog import RefreshFn, Stores
 from ...services.checker import ProbeFn, refresh_status
 from ...services.domains import DomainExists
 from ...services.errors import InvalidInput, NotFound
-from ...services.monitors import UrlCheck, describe_monitors
+from ...services.monitor_validation import UrlCheck
+from ...services.monitors import describe_monitors
 from ...services.url_policy import validate_monitor_url
 from ..dependencies import (
+    get_alert_config,
     get_app_settings,
     get_catalog_repo,
     get_dns_resolver,
@@ -81,10 +85,20 @@ def get_refresh(
     return refresh
 
 
-def monitors_out(stores: Stores, monitors: list[Monitor]) -> list[MonitorOut]:
-    views = describe_monitors(stores.monitors, stores.catalog, monitors, utc_now())
+def get_alert_defaults(config: AlertConfig = Depends(get_alert_config)) -> AlertTiming:
+    """The global alert timing: Settings page value, else UPTIME_* env, else default."""
+    return AlertTiming(
+        alert_delay_minutes=config.uptime_alert_delay_minutes,
+        reminder_minutes=config.uptime_reminder_minutes,
+    )
+
+
+def monitors_out(
+    stores: Stores, monitors: list[Monitor], alert_defaults: AlertTiming
+) -> list[MonitorOut]:
+    views = describe_monitors(stores.monitors, stores.catalog, monitors, utc_now(), alert_defaults)
     return [MonitorOut.from_view(v) for v in views]
 
 
-def monitor_out(stores: Stores, monitor: Monitor) -> MonitorOut:
-    return monitors_out(stores, [monitor])[0]
+def monitor_out(stores: Stores, monitor: Monitor, alert_defaults: AlertTiming) -> MonitorOut:
+    return monitors_out(stores, [monitor], alert_defaults)[0]

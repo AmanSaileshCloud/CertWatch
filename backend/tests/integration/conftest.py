@@ -50,11 +50,17 @@ def pg_url() -> str:
 
 
 @pytest.fixture(scope="session")
-def pg_engine(pg_url: str) -> Engine:
+def pg_alembic(pg_url: str) -> Config:
+    """Alembic config for the test database (for tests that migrate up and down)."""
+    return _alembic_config(pg_url)
+
+
+@pytest.fixture(scope="session")
+def pg_engine(pg_url: str, pg_alembic: Config) -> Engine:
     engine = get_engine(pg_url)
     with engine.begin() as conn:
         conn.execute(text("DROP SCHEMA public CASCADE; CREATE SCHEMA public;"))
-    command.upgrade(_alembic_config(pg_url), "head")
+    command.upgrade(pg_alembic, "head")
     return engine
 
 

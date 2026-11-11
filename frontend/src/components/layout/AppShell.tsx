@@ -12,6 +12,7 @@ import { MonitorDetailPage } from "../websites/MonitorDetailPage";
 import { GroupsPage } from "../groups/GroupsPage";
 import { GroupDetailPage } from "../groups/GroupDetailPage";
 import { ReportsPage } from "../reports/ReportsPage";
+import { SettingsPage } from "../settings/SettingsPage";
 import { Sidebar } from "./Sidebar";
 import { ThemeCycleButton } from "./ThemeCycleButton";
 import logoUrl from "../../assets/WorkmatesLogo.png";
@@ -22,7 +23,7 @@ interface AppShellProps {
   onToggleTheme: () => void;
 }
 
-function renderPage(route: Route) {
+function renderPage(route: Route, isAdmin: boolean) {
   switch (route.page) {
     case "ssl":
       return <SslPage selectedDomain={route.domain} />;
@@ -36,6 +37,8 @@ function renderPage(route: Route) {
       return <GroupDetailPage key={route.id} groupId={route.id} />;
     case "reports":
       return <ReportsPage />;
+    case "settings":
+      return <SettingsPage isAdmin={isAdmin} />;
   }
 }
 
@@ -109,8 +112,8 @@ export function AppShell({ theme, preference, onToggleTheme }: AppShellProps) {
         </header>
 
         <div className="shell">
-          <Sidebar route={route} />
-          <main className="main shell__main">{renderPage(route)}</main>
+          <Sidebar route={route} isAdmin={isAdmin} />
+          <main className="main shell__main">{renderPage(route, isAdmin)}</main>
         </div>
 
         <footer className="footer">

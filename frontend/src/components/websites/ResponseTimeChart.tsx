@@ -6,6 +6,8 @@ type Props = {
   /** Checks oldest first, as returned by api.getSeries. */
   checks: CheckRecord[];
   hours: number;
+  /** The monitor's check interval; see gapThresholdMs for when checks count as a gap. */
+  intervalSeconds: number;
 };
 
 const HEIGHT = 220;
@@ -13,6 +15,7 @@ const MARGIN = { top: 14, right: 14, bottom: 28, left: 52 };
 const DOWN_STRIP = 6;
 const Y_TICKS = 4;
 const X_TICKS = 6;
+const GAP_FACTOR = 2.5;
 
 interface Point {
   time: number;
@@ -40,30 +43,58 @@ function niceCeil(value: number): number {
   return step * exp;
 }
 
-/** Consecutive down checks → [start, end] time spans (end = next check, or start). */
-function downSpans(points: Point[]): [number, number][] {
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/**
+ * Checks further apart than GAP_FACTOR × the larger of the current interval and the
+ * typical (median) spacing count as a gap — so shortening the interval doesn't turn
+ * older, sparser checks into gaps.
+ */
+function gapThresholdMs(points: Point[], intervalSeconds: number): number {
+  const spacings = points.slice(1).map((p, i) => p.time - points[i].time);
+  return GAP_FACTOR * Math.max(intervalSeconds * 1000, median(spacings));
+}
+
+/** True when there were no checks for too long between point i-1 and point i. */
+function isGapBefore(points: Point[], i: number, maxGapMs: number): boolean {
+  return i > 0 && points[i].time - points[i - 1].time > maxGapMs;
+}
+
+function countGaps(points: Point[], maxGapMs: number): number {
+  return points.filter((_, i) => isGapBefore(points, i, maxGapMs)).length;
+}
+
+/** Consecutive down checks → [start, end] time spans (end = next check, or start if there's a gap). */
+function downSpans(points: Point[], maxGapMs: number): [number, number][] {
   const spans: [number, number][] = [];
   let start: number | null = null;
   points.forEach((p, i) => {
     if (!p.check.is_up && start === null) start = p.time;
     const next = points[i + 1];
-    if (start !== null && (!next || next.check.is_up)) {
-      spans.push([start, next ? next.time : p.time]);
+    const gapAfter = next !== undefined && isGapBefore(points, i + 1, maxGapMs);
+    if (start !== null && (!next || next.check.is_up || gapAfter)) {
+      spans.push([start, next && !gapAfter ? next.time : p.time]);
       start = null;
     }
   });
   return spans;
 }
 
-/** SVG path for up checks, broken into separate segments at every down check. */
-function linePath(points: Point[], x: (t: number) => number, y: (ms: number) => number): string {
+/** SVG path for up checks, broken into separate segments at every down check and every gap in checking. */
+function linePath(points: Point[], maxGapMs: number, x: (t: number) => number, y: (ms: number) => number): string {
   let path = "";
   let penDown = false;
-  for (const p of points) {
+  for (const [i, p] of points.entries()) {
     if (!p.check.is_up || p.check.response_ms === null) {
       penDown = false;
       continue;
     }
+    if (isGapBefore(points, i, maxGapMs)) penDown = false;
     path += `${penDown ? "L" : "M"}${x(p.time).toFixed(1)},${y(p.check.response_ms).toFixed(1)}`;
     penDown = true;
   }
@@ -82,19 +113,20 @@ function nearestIndex(points: Point[], time: number): number {
   return lo;
 }
 
-function summarize(points: Point[], hours: number): string {
+function summarize(points: Point[], hours: number, gaps: number): string {
   const up = points.filter((p) => p.check.is_up && p.check.response_ms !== null);
   const down = points.length - points.filter((p) => p.check.is_up).length;
-  if (up.length === 0) return `Response time chart, last ${hours} hours: no successful checks; ${down} down checks.`;
+  const gapText = gaps > 0 ? ` ${gaps} gap${gaps === 1 ? "" : "s"} with no checks.` : "";
+  if (up.length === 0) return `Response time chart, last ${hours} hours: no successful checks; ${down} down checks.${gapText}`;
   const ms = up.map((p) => p.check.response_ms as number);
   const avg = ms.reduce((a, b) => a + b, 0) / ms.length;
   return (
     `Response time chart, last ${hours} hours: ${points.length} checks, ` +
-    `average ${Math.round(avg)} ms, min ${Math.min(...ms)} ms, max ${Math.max(...ms)} ms, ${down} down checks.`
+    `average ${Math.round(avg)} ms, min ${Math.min(...ms)} ms, max ${Math.max(...ms)} ms, ${down} down checks.${gapText}`
   );
 }
 
-export function ResponseTimeChart({ checks, hours }: Props) {
+export function ResponseTimeChart({ checks, hours, intervalSeconds }: Props) {
   const { ref, width } = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
 
@@ -105,6 +137,7 @@ export function ResponseTimeChart({ checks, hours }: Props) {
   // Fix "now" per data load so the x axis doesn't drift between renders.
   const end = useMemo(() => Date.now(), [checks]); // eslint-disable-line react-hooks/exhaustive-deps
   const start = end - hours * 3_600_000;
+  const maxGapMs = useMemo(() => gapThresholdMs(points, intervalSeconds), [points, intervalSeconds]);
 
   const maxMs = Math.max(0, ...points.map((p) => p.check.response_ms ?? 0));
   const yMax = niceCeil(Math.max(100, maxMs * 1.1));
@@ -132,7 +165,7 @@ export function ResponseTimeChart({ checks, hours }: Props) {
         <p className="rtchart__empty">No checks in the last {hours} hours yet.</p>
       ) : (
         width > 0 && (
-          <svg width={width} height={HEIGHT} role="img" aria-label={summarize(points, hours)} className="rtchart__svg">
+          <svg width={width} height={HEIGHT} role="img" aria-label={summarize(points, hours, countGaps(points, maxGapMs))} className="rtchart__svg">
             {yTicks.map((t) => (
               <g key={t}>
                 <line className="rtchart__grid" x1={MARGIN.left} x2={width - MARGIN.right} y1={y(t)} y2={y(t)} />
@@ -153,7 +186,7 @@ export function ResponseTimeChart({ checks, hours }: Props) {
               </text>
             ))}
 
-            {downSpans(points).map(([from, to]) => (
+            {downSpans(points, maxGapMs).map(([from, to]) => (
               <g key={from}>
                 <rect className="rtchart__downband" x={x(from)} y={MARGIN.top} width={Math.max(3, x(to) - x(from))} height={plotH} />
                 <rect className="rtchart__downmark" x={x(from)} y={baseline - DOWN_STRIP} width={Math.max(3, x(to) - x(from))} height={DOWN_STRIP} rx={2} />
@@ -161,7 +194,7 @@ export function ResponseTimeChart({ checks, hours }: Props) {
             ))}
 
             <line className="rtchart__axis" x1={MARGIN.left} x2={width - MARGIN.right} y1={baseline} y2={baseline} />
-            <path className="rtchart__line" d={linePath(points, x, y)} />
+            <path className="rtchart__line" d={linePath(points, maxGapMs, x, y)} />
 
             {hovered && (
               <g className="rtchart__hover" aria-hidden="true">

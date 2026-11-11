@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from backend.ssl_monitor.adapters.storage.catalog_memory import MemoryCatalogRepo
 from backend.ssl_monitor.adapters.storage.memory import MemoryStorage
+from backend.ssl_monitor.adapters.storage.settings_memory import MemorySettingsStore
 from backend.ssl_monitor.adapters.storage.uptime_memory import MemoryUptimeRepo
 from backend.ssl_monitor.api.app import app
 from backend.ssl_monitor.api.dependencies import (
@@ -23,6 +24,8 @@ from backend.ssl_monitor.api.dependencies import (
     get_current_user,
     get_dns_resolver,
     get_probe,
+    get_secret_box,
+    get_settings_store,
     get_storage,
     get_uptime_repo,
 )
@@ -116,6 +119,8 @@ def api():
         get_app_settings: lambda: settings,
         get_probe: lambda: _healthy_probe,
         get_current_user: lambda: User("tester", "admin"),
+        get_settings_store: MemorySettingsStore,
+        get_secret_box: lambda: None,
     }
     app.dependency_overrides.update(overrides)
     yield Api(TestClient(app), storage, repo, catalog, dns)

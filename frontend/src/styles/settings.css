@@ -1,0 +1,170 @@
+/* settings styles — admin Settings page (alerts & SES email). Uses tokens from styles.css. */
+
+.settings {
+  max-width: 760px;
+}
+.settings__section {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.settings__section .panel__title { margin-bottom: 0; }
+.settings__section .grp-hint { margin: -6px 0 0; }
+.settings__fields {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+.settings__field select {
+  font-family: var(--mono);
+  color: var(--ink);
+  border: 1px solid var(--line-bright);
+  border-radius: 9px;
+}
+[data-theme="light"] .settings__field select { background: #f8faff; }
+
+/* ── Field header: label + source badge / reset link ── */
+.settings__fieldhead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.settings__badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  color: var(--ink-dim);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+}
+.settings__reset {
+  padding: 0;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.settings__reset:hover { text-decoration: underline; }
+.settings__reset:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ── Default recipients chips ── */
+.settings__chips {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.settings__chiplist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.settings__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 4px 2px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line-bright);
+  background: var(--panel-2);
+}
+.settings__chip .alertrcpt__remove { width: 22px; height: 22px; border-radius: 999px; }
+.settings__chiptext {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink);
+  word-break: break-all;
+}
+
+/* ── Delivery: transport radios, endpoint + port, password ── */
+.settings__radios {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.settings__radio {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 10px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid var(--line-bright);
+  border-radius: 9px;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+.settings__radio input { accent-color: var(--accent); margin: 0; }
+.settings__radio strong { font-size: 13.5px; color: var(--ink); }
+.settings__radio small { grid-column: 2; font-size: 12px; color: var(--ink-faint); }
+.settings__radio:hover { border-color: var(--accent); }
+.settings__radio.is-checked {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.settings__radio:focus-within { box-shadow: 0 0 0 3px var(--accent-dim); }
+.settings__hostport {
+  display: grid;
+  grid-template-columns: 1fr 120px;
+  gap: 12px;
+}
+.settings__secret {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.settings__secret input { flex: 1 1 220px; min-width: 0; }
+.settings__secret input:disabled { opacity: 0.5; cursor: not-allowed; }
+.settings__secretvalue {
+  flex: 1 1 auto;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ok);
+}
+.settings__warn { color: var(--warn); }
+
+/* ── Save bar / test row / footer ── */
+.settings__savebar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.settings__saveerror { flex: 1 1 240px; margin: 0; }
+.settings__testrow {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.settings__testrow .settings__field { flex: 1 1 260px; }
+.settings__footer {
+  margin: 0 0 18px;
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+.settings__footer strong { color: var(--ink-dim); font-weight: 600; }
+
+@media (max-width: 620px) {
+  .settings__radios,
+  .settings__hostport { grid-template-columns: 1fr; }
+}
+.settings__field select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}

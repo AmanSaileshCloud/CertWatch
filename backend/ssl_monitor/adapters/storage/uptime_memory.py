@@ -6,11 +6,13 @@ no database. Models are frozen dataclasses, so handing them out is safe.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from ...core.alert_models import AlertCandidate, AlertKind, RECENTLY_CLOSED_WINDOW_HOURS
 from ...core.incident_rules import apply_transition, evaluate_in_order
 from ...core.uptime_models import (
     CheckResult,
@@ -29,8 +31,9 @@ from .base import IncidentRules
 _CONFIG_FIELDS = (
     "name", "url", "interval_seconds", "timeout_seconds", "expected_status",
     "keyword", "customer_id", "group_id", "type", "is_paused",
+    "alerts_enabled", "reminder_minutes", "alert_delay_minutes",
 )
-_EDITABLE_FIELDS = frozenset(_CONFIG_FIELDS) | {"next_check_at"}
+_EDITABLE_FIELDS = frozenset(_CONFIG_FIELDS) | {"next_check_at", "alerts_enabled_at"}
 
 _RESET_STATE = {
     "state": MonitorState.UNKNOWN,
@@ -38,6 +41,14 @@ _RESET_STATE = {
     "consecutive_successes": 0,
     "first_failure_at": None,
 }
+
+
+# monitor -> (customer name, group name); see MemoryUptimeRepo.
+NameLookup = Callable[[Monitor], tuple[str | None, str | None]]
+
+
+def _no_names(monitor: Monitor) -> tuple[str | None, str | None]:
+    return None, None
 
 
 def _validated_change(values: Mapping[str, Any]) -> dict[str, Any]:
@@ -57,8 +68,35 @@ def _next_check_at(monitor: Monitor, now: datetime) -> datetime:
     return on_schedule if on_schedule > now else now + interval
 
 
+def _with_alert_sent(incident: Incident, kind: AlertKind, at: datetime) -> Incident:
+    """``incident`` with a sent alert of ``kind`` recorded (TEST records nothing)."""
+    match kind:
+        case AlertKind.DOWN:
+            return replace(incident, down_alert_sent_at=at)
+        case AlertKind.REMINDER:
+            return replace(incident, last_reminder_sent_at=at,
+                           reminder_count=incident.reminder_count + 1)
+        case AlertKind.RECOVERED:
+            return replace(incident, recovery_alert_sent_at=at)
+    return incident
+
+
+def _is_alert_candidate(incident: Incident, now: datetime) -> bool:
+    if incident.is_open:
+        return True
+    recently = now - timedelta(hours=RECENTLY_CLOSED_WINDOW_HOURS)
+    return incident.resolved_at >= recently and incident.recovery_alert_sent_at is None
+
+
 class MemoryUptimeRepo:
-    def __init__(self) -> None:
+    """Monitors, results and incidents held in dicts and lists.
+
+    Customers and groups live in the catalog repo, so ``alert_candidates`` asks
+    ``name_lookup(monitor)`` for the ``(customer_name, group_name)`` to attach; without
+    one, both names are None."""
+
+    def __init__(self, name_lookup: NameLookup | None = None) -> None:
+        self._name_lookup = name_lookup or _no_names
         self._monitors: dict[int, Monitor] = {}
         self._results: list[CheckResult] = []
         self._incidents: dict[int, Incident] = {}
@@ -157,6 +195,23 @@ class MemoryUptimeRepo:
                 total, up = counts.get(result.monitor_id, (0, 0))
                 counts[result.monitor_id] = (total + 1, up + result.is_up)
         return counts
+
+    def alert_candidates(self, now: datetime) -> list[AlertCandidate]:
+        candidates = []
+        for incident in sorted(self._incidents.values(), key=lambda i: (i.started_at, i.id)):
+            monitor = self._monitors[incident.monitor_id]
+            if monitor.alerts_enabled and _is_alert_candidate(incident, now):
+                customer_name, group_name = self._name_lookup(monitor)
+                candidates.append(AlertCandidate(incident, monitor, customer_name, group_name))
+        return candidates
+
+    def mark_alert_sent(self, incident_id: int, kind: AlertKind, at: datetime) -> None:
+        incident = self._incidents.get(incident_id)
+        if incident is not None:
+            self._incidents[incident_id] = _with_alert_sent(incident, kind, at)
+
+    def alert_dispatch_lock(self) -> AbstractContextManager[bool]:
+        return nullcontext(True)  # one process, one dispatcher
 
     def _save_transition(self, transition: MonitorTransition) -> None:
         result = transition.result

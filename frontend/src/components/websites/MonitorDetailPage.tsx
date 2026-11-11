@@ -8,6 +8,7 @@ import { formatDateTime, formatMs, formatPercent, formatRelativeTime, uptimeLeve
 import { useToast } from "../Toast";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { PageHeader } from "../layout/PageHeader";
+import { MonitorAlertsCard } from "./MonitorAlertsCard";
 import { MonitorChecksTable } from "./MonitorChecksTable";
 import { MonitorIncidentsTable } from "./MonitorIncidentsTable";
 import { MonitorStatusBadge } from "./MonitorStatusBadge";
@@ -178,8 +179,10 @@ export function MonitorDetailPage({ monitorId }: { monitorId: number }) {
 
       <section className="panel">
         <h3 className="panel__title">Response time · last {SERIES_HOURS}h</h3>
-        <ResponseTimeChart checks={series} hours={SERIES_HOURS} />
+        <ResponseTimeChart checks={series} hours={SERIES_HOURS} intervalSeconds={monitor.interval_seconds} />
       </section>
+
+      <MonitorAlertsCard monitor={monitor} />
 
       <section className="panel">
         <h3 className="panel__title">Incidents</h3>

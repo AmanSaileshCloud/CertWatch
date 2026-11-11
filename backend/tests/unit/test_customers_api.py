@@ -27,6 +27,7 @@ def test_list_customers_by_name_with_group_count(api):
 @pytest.mark.parametrize("payload, message", [
     ({"name": "   "}, "must not be blank"),
     ({"name": "x" * 201}, "at most 200"),
+    ({"name": "Acme\r\nCorp"}, "control characters"),
     ({"name": "Acme", "contact_email": "not-an-email"}, "invalid contact email"),
 ])
 def test_create_validation(api, payload, message):

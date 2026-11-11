@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from ..core.alert_models import ALLOWED_ALERT_DELAY_MINUTES, ALLOWED_REMINDER_MINUTES
 
 DEFAULT_THRESHOLD_DAYS = "30,14,7,1"
 
@@ -89,6 +91,13 @@ def _positive(kind: type, env: Mapping[str, str], key: str, default: str):
     return value
 
 
+def _one_of(env: Mapping[str, str], key: str, default: str, allowed: tuple[int, ...]) -> int:
+    value = int(env.get(key, default))
+    if value not in allowed:
+        raise ValueError(f"{key} must be one of {', '.join(map(str, allowed))} (got {value})")
+    return value
+
+
 def _required(env: Mapping[str, str], key: str, default: str) -> str:
     value = env.get(key, default).strip()
     if not value:
@@ -118,10 +127,10 @@ class Settings:
     ssm_poll_interval_seconds: float
     # Auth — username/password JWT (self-contained, no external service).
     auth_enabled: bool
-    auth_secret: str
+    auth_secret: str = field(repr=False)
     token_expire_minutes: int
     users_file: str
-    bootstrap_password: str  # seeds the first admin when the user store is empty
+    bootstrap_password: str = field(repr=False)  # seeds the first admin when the user store is empty
     # Uptime monitoring worker.
     uptime_tick_seconds: float = 10.0  # how often to look for due monitors
     uptime_max_concurrency: int = 50  # max sites checked at the same moment
@@ -133,6 +142,13 @@ class Settings:
     # Allow monitors on private/loopback/link-local addresses (internal sites).
     # Off by default: stops the checker being pointed at e.g. the EC2 metadata service.
     uptime_allow_private_targets: bool = False
+    # Uptime alerts (SES email only). Per-monitor values override these defaults.
+    uptime_reminder_minutes: int = 30  # repeat "still down" every N min; 0 = never
+    uptime_alert_delay_minutes: int = 0  # only alert once down for at least N min
+    public_url: str | None = None  # dashboard URL used for links in alert emails
+    # Fernet key that encrypts secrets saved from the UI (SES SMTP password).
+    # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    settings_encryption_key: str | None = field(default=None, repr=False)
 
     @property
     def is_local(self) -> bool:
@@ -221,6 +237,12 @@ class Settings:
             uptime_max_body_bytes=_positive(int, e, "UPTIME_MAX_BODY_BYTES", "1000000"),
             uptime_failure_threshold=_positive(int, e, "UPTIME_FAILURE_THRESHOLD", "3"),
             uptime_recovery_threshold=_positive(int, e, "UPTIME_RECOVERY_THRESHOLD", "1"),
+            uptime_reminder_minutes=_one_of(
+                e, "UPTIME_REMINDER_MINUTES", "30", ALLOWED_REMINDER_MINUTES),
+            uptime_alert_delay_minutes=_one_of(
+                e, "UPTIME_ALERT_DELAY_MINUTES", "0", ALLOWED_ALERT_DELAY_MINUTES),
+            public_url=(e.get("CERTWATCH_PUBLIC_URL", "").strip().rstrip("/") or None),
+            settings_encryption_key=(e.get("SETTINGS_ENCRYPTION_KEY", "").strip() or None),
             uptime_allow_private_targets=(
                 e.get("UPTIME_ALLOW_PRIVATE_TARGETS", "false").strip().lower() == "true"
             ),

@@ -7,7 +7,8 @@ export type Route =
   | { page: "monitor"; id: number }
   | { page: "groups" }
   | { page: "group"; id: number }
-  | { page: "reports" };
+  | { page: "reports" }
+  | { page: "settings" };
 
 const DEFAULT_ROUTE: Route = { page: "ssl" };
 
@@ -30,6 +31,8 @@ export function parseRoute(hash: string): Route {
       return hasId ? { page: "group", id } : { page: "groups" };
     case "reports":
       return { page: "reports" };
+    case "settings":
+      return { page: "settings" };
     case "ssl":
       return rawId ? { page: "ssl", domain: safeDecode(rawId) } : DEFAULT_ROUTE;
     default:

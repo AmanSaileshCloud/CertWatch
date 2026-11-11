@@ -11,6 +11,7 @@ from backend.ssl_monitor.adapters.notifier.base import (
     format_subject,
 )
 from backend.ssl_monitor.adapters.notifier.console import ConsoleNotifier
+from backend.ssl_monitor.core.alert_models import EmailMessage
 from backend.ssl_monitor.core.models import Alert, Status
 
 UTC = dt.timezone.utc
@@ -47,3 +48,13 @@ def test_formatters():
     assert "days_remaining=6" in body
     assert "threshold=7" in body
     assert "not_after=2026-07-02T12:00:00+00:00" in body
+
+
+def test_send_email_records_and_logs(caplog):
+    notifier = ConsoleNotifier()
+    message = EmailMessage(subject="[DOWN] Shop", text="t", html="<p>h</p>", to=("a@x.com", "b@x.com"))
+    with caplog.at_level(logging.WARNING, logger="ssl_monitor.notifier"):
+        assert notifier.send_email(message) is True
+    assert notifier.sent_emails == [message]
+    assert "EMAIL [DOWN] Shop" in caplog.text
+    assert "a@x.com, b@x.com" in caplog.text

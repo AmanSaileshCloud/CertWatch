@@ -9,6 +9,7 @@ import pytest
 
 from backend.ssl_monitor.adapters.storage.base import UptimeRepoPort
 from backend.ssl_monitor.adapters.storage.uptime_memory import MemoryUptimeRepo
+from backend.ssl_monitor.core.alert_models import AlertKind
 from backend.ssl_monitor.core.incident_rules import evaluate
 from backend.ssl_monitor.core.uptime_models import (
     CheckResult,
@@ -449,3 +450,147 @@ def test_result_with_current_version_is_saved_without_the_version():
 
     assert repo.get_monitor(added.id).consecutive_failures == 1
     assert repo.list_check_results(added.id)[0].monitor_version is None
+
+
+# --- Step 4: alert fields, alert candidates, mark_alert_sent --------------------------
+
+LATER = NOW + dt.timedelta(hours=1)
+
+
+def _open(repo, name: str = "site", *, started: int = -120, **monitor_fields):
+    monitor = repo.add_monitor(_monitor(name, **monitor_fields))
+    [incident] = _record(repo, [_went_down(monitor.id, started=started)])
+    return monitor, incident
+
+
+def _closed(repo, name: str = "site", *, started: int = -120, **monitor_fields):
+    monitor, _ = _open(repo, name, started=started, **monitor_fields)
+    [incident] = _record(repo, [_recovered(monitor.id, seconds=60)])
+    return monitor, incident
+
+
+def _candidate_ids(repo, now=LATER) -> list[int]:
+    return [c.incident.id for c in repo.alert_candidates(now)]
+
+
+def test_new_monitor_alert_fields_default_and_round_trip():
+    repo = MemoryUptimeRepo()
+    plain = repo.add_monitor(_monitor("plain"))
+    tuned = repo.add_monitor(_monitor("tuned", alerts_enabled=False, reminder_minutes=60,
+                                      alert_delay_minutes=5))
+
+    assert (plain.alerts_enabled, plain.reminder_minutes, plain.alert_delay_minutes) == (
+        True, None, None)
+    assert (tuned.alerts_enabled, tuned.reminder_minutes, tuned.alert_delay_minutes) == (
+        False, 60, 5)
+    assert repo.get_monitor(tuned.id) == tuned
+
+
+def test_change_monitor_sets_alert_fields():
+    repo = MemoryUptimeRepo()
+    added = repo.add_monitor(_monitor(reminder_minutes=60))
+
+    changed = repo.change_monitor(added.id, {"alerts_enabled": False, "reminder_minutes": None,
+                                             "alert_delay_minutes": 30}, now=NOW)
+
+    assert (changed.alerts_enabled, changed.reminder_minutes, changed.alert_delay_minutes) == (
+        False, None, 30)
+    assert repo.get_monitor(added.id) == changed
+
+
+def test_new_incident_has_no_reminders():
+    _, incident = _open(MemoryUptimeRepo())
+    assert (incident.last_reminder_sent_at, incident.reminder_count) == (None, 0)
+
+
+def test_alert_candidates_are_open_and_unnotified_recently_closed_oldest_first():
+    repo = MemoryUptimeRepo()
+    _, still_down = _open(repo, "down", started=-60)
+    _, recovered = _closed(repo, "back", started=-600)
+    _, tie = _open(repo, "tie", started=-60)
+
+    assert _candidate_ids(repo) == [recovered.id, still_down.id, tie.id]
+
+
+def test_alert_candidates_carry_current_incident_and_monitor():
+    repo = MemoryUptimeRepo()
+    monitor, incident = _open(repo, reminder_minutes=15)
+    repo.mark_alert_sent(incident.id, AlertKind.DOWN, NOW)
+
+    [candidate] = repo.alert_candidates(LATER)
+
+    assert candidate.monitor == repo.get_monitor(monitor.id)
+    assert candidate.incident == repo.list_incidents(monitor.id)[0]
+    assert candidate.incident.down_alert_sent_at == NOW
+
+
+def test_alert_candidates_skip_closed_once_recovery_was_sent():
+    repo = MemoryUptimeRepo()
+    _, closed = _closed(repo)
+    repo.mark_alert_sent(closed.id, AlertKind.RECOVERED, LATER)
+    assert _candidate_ids(repo) == []
+
+
+def test_alert_candidates_skip_closed_outside_the_window():
+    repo = MemoryUptimeRepo()
+    _, closed = _closed(repo, "back")
+    _, still_down = _open(repo, "down")
+    resolved = closed.resolved_at
+
+    assert _candidate_ids(repo, resolved + dt.timedelta(hours=24)) == [closed.id, still_down.id]
+    assert _candidate_ids(repo, resolved + dt.timedelta(hours=24, seconds=1)) == [still_down.id]
+
+
+def test_alert_candidates_skip_monitors_with_alerts_disabled():
+    repo = MemoryUptimeRepo()
+    monitor, incident = _open(repo, alerts_enabled=False)
+    assert _candidate_ids(repo) == []
+
+    repo.change_monitor(monitor.id, {"alerts_enabled": True}, now=NOW)
+    assert _candidate_ids(repo) == [incident.id]
+
+
+def test_alert_candidates_names_default_to_none():
+    repo = MemoryUptimeRepo()
+    _open(repo, customer_id=1, group_id=2)
+    [candidate] = repo.alert_candidates(LATER)
+    assert (candidate.customer_name, candidate.group_name) == (None, None)
+
+
+def test_alert_candidates_take_names_from_the_lookup():
+    names = {1: ("Acme", "Web"), 2: ("Acme", None)}
+    repo = MemoryUptimeRepo(name_lookup=lambda m: names.get(m.id, (None, None)))
+    _open(repo, "grouped", started=-300)
+    _open(repo, "customer", started=-200)
+    _open(repo, "loose", started=-100)
+
+    found = [(c.monitor.name, c.customer_name, c.group_name)
+             for c in repo.alert_candidates(LATER)]
+
+    assert found == [("grouped", "Acme", "Web"), ("customer", "Acme", None),
+                     ("loose", None, None)]
+
+
+def test_mark_alert_sent_records_each_kind():
+    repo = MemoryUptimeRepo()
+    monitor, incident = _open(repo)
+    first, second = NOW + dt.timedelta(minutes=30), NOW + dt.timedelta(minutes=60)
+
+    repo.mark_alert_sent(incident.id, AlertKind.DOWN, NOW)
+    repo.mark_alert_sent(incident.id, AlertKind.REMINDER, first)
+    repo.mark_alert_sent(incident.id, AlertKind.REMINDER, second)
+    repo.mark_alert_sent(incident.id, AlertKind.RECOVERED, LATER)
+
+    assert repo.list_incidents(monitor.id) == [replace(
+        incident, down_alert_sent_at=NOW, last_reminder_sent_at=second, reminder_count=2,
+        recovery_alert_sent_at=LATER)]
+
+
+def test_mark_alert_sent_ignores_test_alerts_and_unknown_incidents():
+    repo = MemoryUptimeRepo()
+    monitor, incident = _open(repo)
+
+    repo.mark_alert_sent(incident.id, AlertKind.TEST, NOW)
+    repo.mark_alert_sent(999, AlertKind.DOWN, NOW)
+
+    assert repo.list_incidents(monitor.id) == [incident]

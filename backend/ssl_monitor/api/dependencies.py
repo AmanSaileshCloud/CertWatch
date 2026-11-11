@@ -13,20 +13,31 @@ from functools import lru_cache
 from fastapi import Depends, Header, HTTPException, status
 
 from ..adapters.notifier.base import NotifierPort
-from ..adapters.storage.base import CatalogRepoPort, StoragePort, UptimeRepoPort
+from ..adapters.secret_box import SecretBox
+from ..adapters.storage.base import (
+    CatalogRepoPort,
+    SettingsStorePort,
+    StoragePort,
+    UptimeRepoPort,
+)
 from ..auth.models import User
 from ..auth.rate_limit import LoginLimiter
 from ..auth.security import decode_access_token
 from ..auth.users import UserStore
 from ..config.settings import Settings
+from ..core.app_settings_models import AlertConfig
 from ..core.cert_probe import probe_cert, probe_cert_info
 from ..handlers._deps import (
     get_settings,
     make_catalog_repo,
+    make_email_notifier,
     make_notifier,
+    make_secret_box,
+    make_settings_store,
     make_storage,
     make_uptime_repo,
 )
+from ..services.app_settings import load_alert_config
 from ..services.checker import ProbeFn
 
 logger = logging.getLogger("ssl_monitor.auth")
@@ -56,6 +67,35 @@ def get_uptime_repo() -> UptimeRepoPort:
 def get_catalog_repo() -> CatalogRepoPort:
     """Process-wide customers/groups repository."""
     return make_catalog_repo()
+
+
+@lru_cache(maxsize=1)
+def get_settings_store() -> SettingsStorePort:
+    """Process-wide store for settings saved on the admin Settings page."""
+    return make_settings_store()
+
+
+def get_secret_box(settings: Settings = Depends(get_app_settings)) -> SecretBox | None:
+    """Encrypts the SMTP password (None when SETTINGS_ENCRYPTION_KEY is unusable)."""
+    return make_secret_box(settings)
+
+
+def get_alert_config(
+    settings: Settings = Depends(get_app_settings),
+    store: SettingsStorePort = Depends(get_settings_store),
+    box: SecretBox | None = Depends(get_secret_box),
+) -> AlertConfig:
+    """The effective alert/email configuration (Settings page → env → default)."""
+    return load_alert_config(store, settings, box)
+
+
+def get_alert_notifier(
+    config: AlertConfig = Depends(get_alert_config),
+    settings: Settings = Depends(get_app_settings),
+) -> NotifierPort:
+    """The notifier built from the saved settings, without the env-only fallback —
+    used by the Settings page's test email so configuration errors show up."""
+    return make_email_notifier(config, settings)
 
 
 def get_dns_resolver():

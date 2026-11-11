@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
 
+from ...core.alert_models import EmailMessage
 from ...core.models import Alert
 
 
@@ -20,6 +21,13 @@ class NotifierPort(Protocol):
     def notify(self, alert: Alert) -> None:
         """Deliver an alert. Implementations must not raise on delivery failure
         in a way that aborts a checker run — log and continue."""
+        ...
+
+    def send_email(self, message: EmailMessage) -> bool:
+        """Send one email (SES in production, a log line locally) to each address in
+        ``message.to`` (one delivery per recipient, so one bad address can't block the
+        others). Returns True if at least one recipient was accepted; never raises on
+        delivery failure (log it) so the caller can retry on the next cycle."""
         ...
 
 

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Response, status
 
+from ...core.alert_models import AlertTiming
 from ...services import catalog as service
 from ...services.catalog import MemberRequest, RefreshFn, Stores
-from ...services.monitors import UrlCheck
+from ...services.monitor_validation import UrlCheck
 from ..dependencies import get_current_user
 from ..uptime_schemas import (
     AddMemberIn,
@@ -16,7 +17,15 @@ from ..uptime_schemas import (
     GroupPatch,
     GroupSummaryOut,
 )
-from . import get_refresh, get_stores, get_url_check, monitor_out, monitors_out, utc_now
+from . import (
+    get_alert_defaults,
+    get_refresh,
+    get_stores,
+    get_url_check,
+    monitor_out,
+    monitors_out,
+    utc_now,
+)
 
 router = APIRouter(prefix="/groups", tags=["groups"], dependencies=[Depends(get_current_user)])
 
@@ -35,9 +44,13 @@ def create_group(body: GroupIn, stores: Stores = Depends(get_stores)) -> GroupSu
 
 
 @router.get("/{group_id}", response_model=GroupDetailOut)
-def get_group(group_id: int, stores: Stores = Depends(get_stores)) -> GroupDetailOut:
+def get_group(
+    group_id: int,
+    stores: Stores = Depends(get_stores),
+    defaults: AlertTiming = Depends(get_alert_defaults),
+) -> GroupDetailOut:
     detail = service.get_group_detail(stores, group_id)
-    return GroupDetailOut.from_detail(detail, monitors_out(stores, detail.monitors))
+    return GroupDetailOut.from_detail(detail, monitors_out(stores, detail.monitors, defaults))
 
 
 @router.patch("/{group_id}", response_model=GroupSummaryOut)
@@ -61,10 +74,11 @@ def add_member(
     stores: Stores = Depends(get_stores),
     check_url: UrlCheck = Depends(get_url_check),
     refresh: RefreshFn = Depends(get_refresh),
+    defaults: AlertTiming = Depends(get_alert_defaults),
 ) -> AddMemberOut:
     result = service.add_member(
         stores, group_id, MemberRequest(**body.model_dump()),
         check_url=check_url, refresh=refresh, now=utc_now(),
     )
-    monitor = monitor_out(stores, result.monitor) if result.monitor else None
+    monitor = monitor_out(stores, result.monitor, defaults) if result.monitor else None
     return AddMemberOut.from_result(result, monitor)

@@ -93,3 +93,22 @@ def self_signed_cert_der(now: dt.datetime) -> bytes:
         common_name="self.example.test",
         issuer_name="Untrusted Root CA",
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_settings_store():
+    """Never let a test read or write the real Settings-page store (the dev database).
+
+    Tests that need a specific store/key override these again themselves.
+    """
+    from backend.ssl_monitor.adapters.storage.settings_memory import MemorySettingsStore
+    from backend.ssl_monitor.api.app import app
+    from backend.ssl_monitor.api.dependencies import get_secret_box, get_settings_store
+
+    store = MemorySettingsStore()
+    app.dependency_overrides.setdefault(get_settings_store, lambda: store)
+    app.dependency_overrides.setdefault(get_secret_box, lambda: None)
+    yield
+    if app.dependency_overrides.get(get_settings_store) is not None:
+        app.dependency_overrides.pop(get_settings_store, None)
+        app.dependency_overrides.pop(get_secret_box, None)

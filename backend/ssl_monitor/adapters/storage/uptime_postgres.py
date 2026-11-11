@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
+from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import Any
 
@@ -24,6 +25,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from ...core.alert_models import AlertCandidate, AlertKind
 from ...core.uptime_models import (
     CheckResult,
     CloseReason,
@@ -35,8 +37,16 @@ from ...core.uptime_models import (
     MonitorType,
 )
 from ...core.incident_rules import evaluate_in_order
-from .base import IncidentRules
 from ..db.tables import check_results, incidents, monitors
+from .base import IncidentRules
+from .uptime_alerts_postgres import (
+    INCIDENT_PREFIX,
+    MONITOR_PREFIX,
+    alert_candidates_query,
+    alert_dispatch_lock,
+    mark_alert_sent_statement,
+    unprefixed,
+)
 
 _CONFIG_FIELDS = (
     "customer_id",
@@ -49,10 +59,13 @@ _CONFIG_FIELDS = (
     "expected_status",
     "keyword",
     "is_paused",
+    "alerts_enabled",
+    "reminder_minutes",
+    "alert_delay_minutes",
 )
 
 # Fields a user change (``change_monitor``) may set; runtime state is not among them.
-_EDITABLE_FIELDS = frozenset(_CONFIG_FIELDS) | {"next_check_at"}
+_EDITABLE_FIELDS = frozenset(_CONFIG_FIELDS) | {"next_check_at", "alerts_enabled_at"}
 
 _RESET_STATE = {
     "state": MonitorState.UNKNOWN.value,
@@ -73,7 +86,10 @@ _RESULT_COLUMNS = (
 
 
 def _row_to_monitor(row: Any) -> Monitor:
-    data = dict(row._mapping)
+    return _monitor_from(dict(row._mapping))
+
+
+def _monitor_from(data: dict[str, Any]) -> Monitor:
     data["type"] = MonitorType(data["type"])
     data["state"] = MonitorState(data["state"])
     return Monitor(**data)
@@ -96,10 +112,22 @@ def _result_to_row(result: CheckResult) -> dict[str, Any]:
 
 
 def _row_to_incident(row: Any) -> Incident:
-    data = dict(row._mapping)
+    return _incident_from(dict(row._mapping))
+
+
+def _incident_from(data: dict[str, Any]) -> Incident:
     if data["close_reason"] is not None:
         data["close_reason"] = CloseReason(data["close_reason"])
     return Incident(**data)
+
+
+def _row_to_candidate(row: Any) -> AlertCandidate:
+    return AlertCandidate(
+        incident=_incident_from(unprefixed(row, INCIDENT_PREFIX)),
+        monitor=_monitor_from(unprefixed(row, MONITOR_PREFIX)),
+        customer_name=row.customer_name,
+        group_name=row.group_name,
+    )
 
 
 def _change_to_row(values: Mapping[str, Any]) -> dict[str, Any]:
@@ -257,6 +285,20 @@ class PostgresUptimeRepo:
             stmt = stmt.where(check_results.c.monitor_id == any_(ids))
         with self._engine.connect() as conn:
             return {monitor_id: (total, up) for monitor_id, total, up in conn.execute(stmt)}
+
+    def alert_candidates(self, now: datetime) -> list[AlertCandidate]:
+        with self._engine.connect() as conn:
+            return [_row_to_candidate(row) for row in conn.execute(alert_candidates_query(now))]
+
+    def mark_alert_sent(self, incident_id: int, kind: AlertKind, at: datetime) -> None:
+        stmt = mark_alert_sent_statement(incident_id, kind, at)
+        if stmt is None:
+            return
+        with self._engine.begin() as conn:
+            conn.execute(stmt)
+
+    def alert_dispatch_lock(self) -> AbstractContextManager[bool]:
+        return alert_dispatch_lock(self._engine)
 
 
 def _advance_next_check(now: datetime, ids: list[int]):

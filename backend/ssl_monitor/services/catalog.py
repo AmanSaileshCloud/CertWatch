@@ -7,7 +7,6 @@ URL it creates (or moves) the SSL domain and creates the website monitor.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -19,12 +18,13 @@ from ..core.catalog_models import Customer, MonitorGroup
 from ..core.models import DomainRecord, Status, make_domain_key
 from ..core.uptime_models import Monitor
 from . import monitors as monitor_service
+from .alert_rules import is_valid_email
 from .domains import DomainNotFound, InvalidDomain, add_domain
 from .errors import CustomerNotFound, GroupNotFound, InvalidInput
-from .monitors import UrlCheck, require_customer, require_group
+from .monitor_validation import UrlCheck, has_control_characters
+from .monitors import require_customer, require_group
 
 MAX_NAME_LENGTH = 200
-_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _SSL_DOWN = frozenset({Status.EXPIRED, Status.UNREACHABLE})
 
 # Probes a freshly added domain in place (like POST /domains does).
@@ -87,6 +87,8 @@ def _clean_name(value: Any, what: str) -> str:
         raise InvalidInput(f"{what} name must not be blank")
     if len(name) > MAX_NAME_LENGTH:
         raise InvalidInput(f"{what} name must be at most {MAX_NAME_LENGTH} characters")
+    if has_control_characters(name):
+        raise InvalidInput(f"{what} name must not contain line breaks or control characters")
     return name
 
 
@@ -94,7 +96,7 @@ def _clean_email(value: Any) -> str | None:
     email = (value or "").strip()
     if not email:
         return None
-    if not _EMAIL_RE.match(email):
+    if not is_valid_email(email):
         raise InvalidInput(f"invalid contact email: {email!r}")
     return email
 
