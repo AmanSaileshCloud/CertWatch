@@ -123,3 +123,24 @@ def test_real_bootstrap_password_is_accepted():
         env={"AUTH_SECRET": GOOD_SECRET, "AUTH_BOOTSTRAP_PASSWORD": "s3cur3-pw-9f2c"}
     )
     assert s.bootstrap_password_problem is None
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"UPTIME_MAX_CONCURRENCY": "0"},
+        {"UPTIME_TICK_SECONDS": "0"},
+        {"UPTIME_TICK_SECONDS": "-5"},
+        {"UPTIME_MAX_BODY_BYTES": "-1"},
+        {"UPTIME_REGION": "  "},
+        {"UPTIME_USER_AGENT": ""},
+    ],
+)
+def test_nonsense_uptime_settings_are_rejected(env):
+    with pytest.raises(ValueError):
+        Settings.from_env(env=env)
+
+
+def test_uptime_defaults():
+    s = Settings.from_env(env={})
+    assert (s.uptime_tick_seconds, s.uptime_max_concurrency, s.uptime_region) == (10.0, 50, "default")

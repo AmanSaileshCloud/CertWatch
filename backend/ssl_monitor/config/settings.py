@@ -81,6 +81,21 @@ def _parse_thresholds(raw: str) -> list[int]:
     return sorted(values, reverse=True)
 
 
+def _positive(kind: type, env: Mapping[str, str], key: str, default: str):
+    """Read ``key`` as int/float and refuse zero or negative values."""
+    value = kind(env.get(key, default))
+    if value <= 0:
+        raise ValueError(f"{key} must be greater than 0 (got {value})")
+    return value
+
+
+def _required(env: Mapping[str, str], key: str, default: str) -> str:
+    value = env.get(key, default).strip()
+    if not value:
+        raise ValueError(f"{key} must not be empty")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     backend: str  # "local" | "aws"
@@ -194,11 +209,11 @@ class Settings:
             token_expire_minutes=int(e.get("AUTH_TOKEN_EXPIRE_MINUTES", "720")),
             users_file=e.get("AUTH_USERS_FILE", "auth_users.json").strip(),
             bootstrap_password=e.get("AUTH_BOOTSTRAP_PASSWORD", "admin123"),
-            uptime_tick_seconds=float(e.get("UPTIME_TICK_SECONDS", "10")),
-            uptime_max_concurrency=int(e.get("UPTIME_MAX_CONCURRENCY", "50")),
-            uptime_user_agent=e.get("UPTIME_USER_AGENT", "CertWatch-Uptime/1.0").strip(),
-            uptime_region=e.get("UPTIME_REGION", "default").strip(),
-            uptime_max_body_bytes=int(e.get("UPTIME_MAX_BODY_BYTES", "1000000")),
+            uptime_tick_seconds=_positive(float, e, "UPTIME_TICK_SECONDS", "10"),
+            uptime_max_concurrency=_positive(int, e, "UPTIME_MAX_CONCURRENCY", "50"),
+            uptime_user_agent=_required(e, "UPTIME_USER_AGENT", "CertWatch-Uptime/1.0"),
+            uptime_region=_required(e, "UPTIME_REGION", "default"),
+            uptime_max_body_bytes=_positive(int, e, "UPTIME_MAX_BODY_BYTES", "1000000"),
         )
 
     def boto_kwargs(self) -> dict:

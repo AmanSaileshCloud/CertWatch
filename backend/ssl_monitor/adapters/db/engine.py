@@ -10,6 +10,7 @@ from functools import lru_cache
 
 from sqlalchemy import Engine, create_engine
 
+CONNECT_TIMEOUT_SECONDS = 5
 _DRIVER_PREFIX = "postgresql+psycopg://"
 _PLAIN_PREFIXES = ("postgresql://", "postgres://")
 
@@ -26,6 +27,7 @@ def normalize_database_url(url: str) -> str:
 def get_engine(database_url: str) -> Engine:
     return create_engine(
         normalize_database_url(database_url),
+        connect_args={"connect_timeout": CONNECT_TIMEOUT_SECONDS},
         pool_pre_ping=True,
         pool_size=5,
         max_overflow=10,

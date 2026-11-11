@@ -94,6 +94,7 @@ cp "$APP_DIR/deploy/certwatch-api.service"          /etc/systemd/system/
 cp "$APP_DIR/deploy/certwatch-checker.service"      /etc/systemd/system/
 cp "$APP_DIR/deploy/certwatch-checker.timer"        /etc/systemd/system/
 cp "$APP_DIR/deploy/certwatch-checker-loop.service" /etc/systemd/system/
+cp "$APP_DIR/deploy/certwatch-uptime.service"       /etc/systemd/system/
 
 echo "==> Installing Nginx site"
 mkdir -p /etc/nginx/snippets
@@ -124,6 +125,8 @@ systemctl enable --now certwatch-api.service
 # not both. Disable the timer here so re-runs don't leave both active.)
 systemctl disable --now certwatch-checker.timer 2>/dev/null || true
 systemctl enable --now certwatch-checker-loop.service
+# 24x7 website uptime worker (needs DATABASE_URL in the env file).
+systemctl enable --now certwatch-uptime.service
 nginx -t
 systemctl restart nginx
 

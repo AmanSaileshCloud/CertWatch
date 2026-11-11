@@ -15,16 +15,19 @@ from ..adapters.db.engine import get_engine
 from ..adapters.notifier.base import NotifierPort
 from ..adapters.notifier.console import ConsoleNotifier
 from ..adapters.notifier.sns_ses import SnsSesNotifier
-from ..adapters.storage.base import StoragePort
+from ..adapters.storage.base import StoragePort, UptimeRepoPort
 from ..adapters.storage.memory import MemoryStorage
 from ..adapters.storage.postgres import PostgresStorage
 from ..adapters.storage.sqlite import SqliteStorage
+from ..adapters.storage.uptime_memory import MemoryUptimeRepo
+from ..adapters.storage.uptime_postgres import PostgresUptimeRepo
 from ..config.settings import Settings
 
 # Process-global in-memory store, used only when STORAGE=memory. It persists for
 # the life of the API process (fine for no-infra local dev / the frontend demo),
 # but NOT across separate processes — the `--once` runner won't see it.
 _MEMORY_STORE: MemoryStorage | None = None
+_MEMORY_UPTIME_REPO: MemoryUptimeRepo | None = None
 
 
 @lru_cache(maxsize=1)
@@ -57,6 +60,22 @@ def make_storage(settings: Settings | None = None) -> StoragePort:
     if settings.storage == "sqlite":
         return SqliteStorage(settings.sqlite_path)
     return PostgresStorage(make_engine(settings))
+
+
+def make_uptime_repo(settings: Settings | None = None) -> UptimeRepoPort:
+    """Select the uptime repo by config.
+
+    ``memory`` → process-global in-memory repo (dev / tests).
+    Anything else → PostgreSQL; uptime has no SQLite implementation, so
+    ``sqlite`` storage also uses DATABASE_URL (and fails loudly without it).
+    """
+    settings = settings or get_settings()
+    if settings.storage == "memory":
+        global _MEMORY_UPTIME_REPO
+        if _MEMORY_UPTIME_REPO is None:
+            _MEMORY_UPTIME_REPO = MemoryUptimeRepo()
+        return _MEMORY_UPTIME_REPO
+    return PostgresUptimeRepo(make_engine(settings))
 
 
 def make_notifier(settings: Settings | None = None) -> NotifierPort:

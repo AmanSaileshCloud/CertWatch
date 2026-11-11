@@ -1,0 +1,26 @@
+[Unit]
+Description=CERTWatch uptime checker — continuous website monitoring
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=certwatch
+Group=certwatch
+WorkingDirectory=/opt/certwatch/app
+EnvironmentFile=/etc/certwatch/certwatch.env
+# Every UPTIME_TICK_SECONDS (default 10) the worker checks the monitors that are
+# due; each monitor's own interval (1/5/10 min) decides how often it is checked.
+# SIGTERM (systemctl stop) finishes cleanly.
+ExecStart=/opt/certwatch/venv/bin/python -m backend.runner.run_uptime
+Restart=always
+RestartSec=10
+
+# Hardening — the checker only writes to its data dir.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/certwatch/data
+
+[Install]
+WantedBy=multi-user.target
