@@ -16,7 +16,7 @@ from ...core.uptime_models import CheckResult, Monitor
 # Only configuration is taken from the caller, as in Postgres; runtime state starts fresh.
 _CONFIG_FIELDS = (
     "name", "url", "interval_seconds", "timeout_seconds", "expected_status",
-    "keyword", "customer_id", "type", "is_paused",
+    "keyword", "customer_id", "group_id", "type", "is_paused",
 )
 
 

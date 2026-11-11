@@ -43,6 +43,7 @@ class Monitor:
     expected_status: int = 200
     keyword: str | None = None
     customer_id: int | None = None
+    group_id: int | None = None
     type: MonitorType = MonitorType.HTTP
     is_paused: bool = False
     state: MonitorState = MonitorState.UNKNOWN

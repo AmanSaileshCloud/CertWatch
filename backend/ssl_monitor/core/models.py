@@ -107,6 +107,7 @@ class DomainRecord:
     # once rather than on every checker pass. Cleared by the next fresh report.
     stale_alert_sent: bool = False
     customer_id: int | None = None
+    group_id: int | None = None
 
     @property
     def is_agent_managed(self) -> bool:

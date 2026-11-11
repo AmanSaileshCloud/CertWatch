@@ -21,6 +21,7 @@ from sqlalchemy import (
     SmallInteger,
     Table,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -56,6 +57,22 @@ customers = Table(
     Column("created_at", _tz(), nullable=False, server_default=func.now()),
 )
 
+monitor_groups = Table(
+    "monitor_groups",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("customer_id", Integer, ForeignKey("customers.id", ondelete="CASCADE"),
+           nullable=False),
+    Column("name", Text, nullable=False),
+    Column("created_at", _tz(), nullable=False, server_default=func.now()),
+    UniqueConstraint("customer_id", "name", name="uq_monitor_groups_customer_name"),
+)
+
+
+def _group_column() -> Column:
+    return Column("group_id", Integer, ForeignKey("monitor_groups.id", ondelete="SET NULL"))
+
+
 domains = Table(
     "domains",
     metadata,
@@ -74,6 +91,8 @@ domains = Table(
     Column("agent_id", Text),
     Column("stale_alert_sent", Boolean, nullable=False, server_default=text("false")),
     Column("customer_id", Integer, ForeignKey("customers.id", ondelete="SET NULL")),
+    _group_column(),
+    Index("ix_domains_group", "group_id"),
 )
 
 monitors = Table(
@@ -99,6 +118,7 @@ monitors = Table(
     Column("last_error", Text),
     Column("created_at", _tz(), nullable=False, server_default=func.now()),
     Column("updated_at", _tz(), nullable=False, server_default=func.now()),
+    _group_column(),
     CheckConstraint(_in_list("interval_seconds", ALLOWED_INTERVAL_SECONDS),
                     name="ck_monitors_interval"),
     CheckConstraint(
@@ -110,6 +130,7 @@ monitors = Table(
     CheckConstraint(_in_list("type", [t.value for t in MonitorType]), name="ck_monitors_type"),
     Index("ix_monitors_due", "next_check_at", postgresql_where=text("NOT is_paused")),
     Index("ix_monitors_customer", "customer_id"),
+    Index("ix_monitors_group", "group_id"),
 )
 
 check_results = Table(

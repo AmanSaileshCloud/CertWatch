@@ -13,6 +13,7 @@ from ..db.tables import check_results, monitors
 
 _CONFIG_FIELDS = (
     "customer_id",
+    "group_id",
     "name",
     "type",
     "url",
