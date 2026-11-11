@@ -176,7 +176,7 @@ def change_password(
 ) -> MessageOut:
     if len(body.new_password) < 8:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="New password must be at least 8 characters.",
         )
     if store.verify(user.username, body.current_password) is None:
@@ -206,9 +206,9 @@ def admin_add_user(
 ) -> AdminUserOut:
     username = body.username.strip()
     if not username:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="username required")
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="username required")
     if not body.password:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="password required")
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="password required")
     if store.get(username) is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="username already exists")
     user = store.add(username, body.password, role=body.role)
@@ -249,7 +249,7 @@ def post_domain(
     except DomainExists as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except InvalidDomain as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
     if body.agent_id:
         record.source = SOURCE_AGENT
         record.agent_id = body.agent_id

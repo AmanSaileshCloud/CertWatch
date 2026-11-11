@@ -1,7 +1,7 @@
 """Environment-driven configuration.
 
 A single :class:`Settings` object is the only place env vars are read. Storage is
-SQLite on the box; AWS is used only for SES/SNS alerts (via ``boto_kwargs``).
+PostgreSQL (``DATABASE_URL``); AWS is used only for SES/SNS alerts (via ``boto_kwargs``).
 Core logic never imports this module.
 """
 
@@ -84,8 +84,9 @@ def _parse_thresholds(raw: str) -> list[int]:
 @dataclass(frozen=True)
 class Settings:
     backend: str  # "local" | "aws"
-    storage: str  # "sqlite" (default) | "memory" (non-persistent dev only)
-    sqlite_path: str  # DB file path when storage=sqlite
+    storage: str  # "postgres" (default) | "sqlite" (legacy) | "memory" (dev/tests only)
+    database_url: str | None  # PostgreSQL URL when storage=postgres
+    sqlite_path: str  # DB file path when storage=sqlite (also the migration source)
     aws_region: str  # for SES/SNS
     aws_endpoint_url: str | None  # LocalStack URL locally; None on real AWS
     sns_topic_arn: str | None
@@ -106,6 +107,12 @@ class Settings:
     token_expire_minutes: int
     users_file: str
     bootstrap_password: str  # seeds the first admin when the user store is empty
+    # Uptime monitoring worker.
+    uptime_tick_seconds: float = 10.0  # how often to look for due monitors
+    uptime_max_concurrency: int = 50  # max sites checked at the same moment
+    uptime_user_agent: str = "CertWatch-Uptime/1.0"
+    uptime_region: str = "default"  # stamped on each result (multi-region later)
+    uptime_max_body_bytes: int = 1_000_000  # page bytes read for the keyword check
 
     @property
     def is_local(self) -> bool:
@@ -165,7 +172,8 @@ class Settings:
         endpoint = e.get("AWS_ENDPOINT_URL", "").strip() or None
         return cls(
             backend=e.get("BACKEND", "local").strip().lower(),
-            storage=e.get("STORAGE", "sqlite").strip().lower(),
+            storage=e.get("STORAGE", "postgres").strip().lower(),
+            database_url=(e.get("DATABASE_URL", "").strip() or None),
             sqlite_path=e.get("SQLITE_PATH", "certwatch.db").strip(),
             aws_region=e.get("AWS_REGION", "us-east-1").strip(),
             aws_endpoint_url=endpoint,
@@ -186,6 +194,11 @@ class Settings:
             token_expire_minutes=int(e.get("AUTH_TOKEN_EXPIRE_MINUTES", "720")),
             users_file=e.get("AUTH_USERS_FILE", "auth_users.json").strip(),
             bootstrap_password=e.get("AUTH_BOOTSTRAP_PASSWORD", "admin123"),
+            uptime_tick_seconds=float(e.get("UPTIME_TICK_SECONDS", "10")),
+            uptime_max_concurrency=int(e.get("UPTIME_MAX_CONCURRENCY", "50")),
+            uptime_user_agent=e.get("UPTIME_USER_AGENT", "CertWatch-Uptime/1.0").strip(),
+            uptime_region=e.get("UPTIME_REGION", "default").strip(),
+            uptime_max_body_bytes=int(e.get("UPTIME_MAX_BODY_BYTES", "1000000")),
         )
 
     def boto_kwargs(self) -> dict:
