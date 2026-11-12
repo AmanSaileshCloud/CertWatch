@@ -64,3 +64,5 @@ class AlertConfig:
     smtp_username: str | None = None
     # Decrypted; repr=False keeps it out of logs, tracebacks and test diffs.
     smtp_password: str | None = field(default=None, repr=False)
+    # Time zone for timestamps in alert emails (REPORT_TIMEZONE).
+    report_timezone: str = "UTC"

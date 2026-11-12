@@ -1,8 +1,11 @@
 """Uptime alert email formatter (pure — no I/O).
 
 Turns one alert (DOWN / STILL DOWN reminder / RECOVERED / TEST) about one
-incident into an ``EmailMessage``: a subject, a plain-text body and an
-inline-styled HTML card in the same brand style as the SSL alert card.
+incident into an ``EmailMessage``: a subject, a plain-text body and an HTML
+email laid out as a status-page style report — a full-width coloured banner
+("Shop - Monitor is Down / Down since …"), a stacked list of details, then an
+Availability Summary (last 3 days) and a Performance Report (last 24 hours, with
+a response-time chart attached as an inline PNG) when an ``AlertReport`` is given.
 
 Monitor names, URLs and error reasons come from users and remote sites, so every
 such value is HTML-escaped before it goes into the HTML part, and the names in the
@@ -13,30 +16,46 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
+from zoneinfo import ZoneInfo
 
-from ...core.alert_models import AlertCandidate, AlertKind, EmailMessage
+from ...core.alert_models import (
+    AlertCandidate,
+    AlertKind,
+    AlertReport,
+    EmailMessage,
+    InlineImage,
+)
 from ...core.uptime_models import Incident
+from .uptime_chart import WIDTH as CHART_WIDTH
+from .uptime_chart import chart_alt_text, render_response_chart
 
 _EMPTY = "—"
+CHART_CID = "response-chart"
 
 
 @dataclass(frozen=True)
 class _Style:
-    text: str
-    bg: str
-    border: str
-    headline: str
+    banner: str  # banner background colour
+    title: str  # "<name> - <title>"
+    since: str  # "<since> <time>" under the title
     status: str
 
 
 _STYLES = {
-    AlertKind.DOWN: _Style("#991b1b", "#fef2f2", "#fecaca", "WEBSITE DOWN", "DOWN"),
-    AlertKind.REMINDER: _Style("#991b1b", "#fef2f2", "#fecaca", "WEBSITE STILL DOWN", "DOWN"),
-    AlertKind.RECOVERED: _Style("#166534", "#f0fdf4", "#bbf7d0", "WEBSITE RECOVERED", "UP"),
-    AlertKind.TEST: _Style("#3730a3", "#eef2ff", "#c7d2fe", "TEST ALERT", "TEST"),
+    AlertKind.DOWN: _Style("#e5484d", "Monitor is Down", "Down since", "DOWN"),
+    AlertKind.REMINDER: _Style("#e5484d", "Monitor is Still Down", "Down since", "DOWN"),
+    AlertKind.RECOVERED: _Style("#2ecc71", "Monitor is Available", "Available since", "UP"),
+    AlertKind.TEST: _Style("#4733e0", "Test Alert", "Sent at", "TEST"),
 }
+
+
+@dataclass(frozen=True)
+class _Row:
+    label: str
+    value: str  # NOT escaped
+    link: bool = False  # render the value as a link (only http/https URLs are linked)
 
 
 def format_duration(seconds: float) -> str:
@@ -54,6 +73,29 @@ def format_duration(seconds: float) -> str:
     return f"{secs}s"
 
 
+def format_duration_long(seconds: float) -> str:
+    """Spelled-out duration for the email body: "0 Mins 41 Secs", "1 Hrs 30 Mins",
+    "2 Days 3 Hrs"."""
+    total = max(0, int(seconds))
+    days, rest = divmod(total, 86400)
+    hours, rest = divmod(rest, 3600)
+    minutes, secs = divmod(rest, 60)
+    if days:
+        return f"{days} Days {hours} Hrs"
+    if hours:
+        return f"{hours} Hrs {minutes} Mins"
+    return f"{minutes} Mins {secs} Secs"
+
+
+def format_alert_time(value: datetime | None, tz: str = "UTC") -> str:
+    """"12-Nov-2026, 11:36:55 am IST" — ``value`` in time zone ``tz``; naive = UTC."""
+    if value is None:
+        return _EMPTY
+    local = _as_utc(value).astimezone(ZoneInfo(tz))
+    am_pm = local.strftime("%p").lower()
+    return local.strftime(f"%d-%b-%Y, %I:%M:%S {am_pm} %Z")
+
+
 def _two_units(big: int, big_unit: str, small: int, small_unit: str) -> str:
     return f"{big}{big_unit} {small}{small_unit}" if small else f"{big}{big_unit}"
 
@@ -65,16 +107,39 @@ def format_uptime_alert(
     now: datetime,
     to: Sequence[str],
     public_url: str | None,
+    tz: str = "UTC",
+    report: AlertReport | None = None,
 ) -> EmailMessage:
-    duration = format_duration(_incident_seconds(candidate.incident, now))
-    rows = _detail_rows(kind, candidate, duration)
+    """``tz`` is the time zone the email's timestamps are shown in (REPORT_TIMEZONE);
+    ``report`` adds the IP and the availability/performance summaries."""
+    seconds = _incident_seconds(candidate.incident, now)
+    rows = _detail_rows(kind, candidate, seconds, report)
     link = _dashboard_link(public_url, candidate.monitor.id)
+    since = _since(kind, candidate.incident, now, tz)
+    chart = _chart_image(candidate, report, now, tz)
     return EmailMessage(
-        subject=f"{_subject_prefix(kind, duration)} {_title(candidate)}",
-        text=_text_body(kind, candidate, rows, link),
-        html=_html_body(kind, candidate, rows, link, now),
+        subject=f"{_subject_prefix(kind, format_duration(seconds))} {_title(candidate)}",
+        text=_text_body(kind, candidate, since, rows, report, link),
+        html=_html_body(kind, candidate, since, rows, report, link, chart is not None),
         to=tuple(to),
+        images=(chart,) if chart else (),
     )
+
+
+def _chart_image(
+    candidate: AlertCandidate, report: AlertReport | None, now: datetime, tz: str
+) -> InlineImage | None:
+    """The response-time chart for the Performance Report; None without data."""
+    if report is None or not report.response_series:
+        return None
+    png = render_response_chart(
+        report.response_series,
+        start=now - timedelta(hours=report.performance_hours),
+        end=now,
+        interval_seconds=candidate.monitor.interval_seconds,
+        tz=tz,
+    )
+    return InlineImage(CHART_CID, png) if png else None
 
 
 def _title(candidate: AlertCandidate) -> str:
@@ -112,103 +177,220 @@ def _as_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-def _format_time(value: datetime | None) -> str:
-    return _as_utc(value).strftime("%d %b %Y, %H:%M UTC") if value else _EMPTY
+def _since(kind: AlertKind, incident: Incident, now: datetime, tz: str) -> str:
+    """The banner's second line: "Down since …" / "Available since …" / "Sent at …"."""
+    when = {
+        AlertKind.RECOVERED: incident.resolved_at,
+        AlertKind.TEST: now,
+    }.get(kind, incident.started_at)
+    return f"{_STYLES[kind].since} {format_alert_time(when, tz)}"
 
 
-def _detail_rows(kind: AlertKind, candidate: AlertCandidate, duration: str) -> list[tuple[str, str]]:
-    """Label/value pairs shared by the text and HTML bodies (values NOT escaped)."""
+def _detail_rows(
+    kind: AlertKind, candidate: AlertCandidate, seconds: float, report: AlertReport | None
+) -> list[_Row]:
+    """The stacked label/value list under the banner (shared by text and HTML)."""
     monitor, incident = candidate.monitor, candidate.incident
-    rows = [
-        ("Website", monitor.name),
-        ("URL", monitor.url),
-        ("Status", _STYLES[kind].status),
-        ("Down since", _format_time(incident.started_at)),
-    ]
+    rows = [_Row("Site monitored", monitor.url, link=True)]
+    group = " · ".join(_one_line(p) for p in (candidate.customer_name, candidate.group_name) if p)
+    if group:
+        rows.append(_Row("Customer / Group", group))
+    if report and report.resolved_ip:
+        rows.append(_Row("Resolved IP", report.resolved_ip))
+    reason = incident.reason or monitor.last_error or _EMPTY
     if kind is AlertKind.RECOVERED:
-        rows.append(("Recovered at", _format_time(incident.resolved_at)))
-    rows += [
-        ("Duration", duration),
-        ("Reason", incident.reason or monitor.last_error or _EMPTY),
-        ("Last status code", str(monitor.last_status_code or _EMPTY)),
-        ("Check interval", f"every {format_duration(monitor.interval_seconds)}"),
-    ]
+        rows += [
+            _Row("Last Down Duration", format_duration_long(seconds)),
+            _Row("Reason(s)", f"{reason} (Resolved)" if reason != _EMPTY else _EMPTY),
+        ]
+    else:
+        rows += [
+            _Row("Down Duration", format_duration_long(seconds)),
+            _Row("Reason(s)", reason),
+        ]
     if kind is AlertKind.REMINDER:
-        rows.append(("Reminder", f"#{incident.reminder_count + 1}"))
+        rows.append(_Row("Reminder", f"#{incident.reminder_count + 1}"))
+    rows += [
+        _Row("Last Status Code", str(monitor.last_status_code or _EMPTY)),
+        _Row("Check Settings", _check_settings(candidate)),
+    ]
     return rows
+
+
+def _check_settings(candidate: AlertCandidate) -> str:
+    """"Every 5m · expects HTTP 200 · timeout 10s" (+ the keyword, when one is set)."""
+    monitor = candidate.monitor
+    parts = [
+        f"Every {format_duration(monitor.interval_seconds)}",
+        f"expects HTTP {monitor.expected_status}",
+        f"timeout {monitor.timeout_seconds}s",
+    ]
+    if monitor.keyword:
+        parts.append(f'keyword "{_one_line(monitor.keyword)}"')
+    return " · ".join(parts)
 
 
 def _dashboard_link(public_url: str | None, monitor_id: int) -> str | None:
     return f"{public_url.rstrip('/')}/#/websites/{monitor_id}" if public_url else None
 
 
+# ── Report figures ───────────────────────────────────────────────
+
+
+def _pct(value: float | None) -> str:
+    return f"{value:.3f} %" if value is not None else _EMPTY
+
+
+def _ms(value: int | None) -> str:
+    return f"{value} ms" if value is not None else _EMPTY
+
+
+def _summary_tiles(report: AlertReport) -> list[tuple[str, str]]:
+    return [
+        ("Availability", _pct(report.availability_pct)),
+        ("No. of Downtimes", str(report.downtimes)),
+        ("Downtime Duration", format_duration_long(report.downtime_seconds)),
+    ]
+
+
+def _performance_tiles(report: AlertReport) -> list[tuple[str, str]]:
+    return [
+        ("Uptime", _pct(report.uptime_pct)),
+        ("Avg. Response Time", _ms(report.avg_response_ms)),
+        ("Fastest", _ms(report.min_response_ms)),
+        ("Slowest", _ms(report.max_response_ms)),
+        ("Checks", str(report.checks)),
+    ]
+
+
+def _summary_heading(report: AlertReport) -> tuple[str, str]:
+    return "Availability Summary Report", f"Last {report.summary_days} days"
+
+
+def _performance_heading(report: AlertReport) -> tuple[str, str]:
+    return "Performance Report", f"Last {report.performance_hours} Hours"
+
+
+# ── Plain text ───────────────────────────────────────────────────
+
+
 def _text_body(
-    kind: AlertKind, candidate: AlertCandidate, rows: list[tuple[str, str]], link: str | None
+    kind: AlertKind,
+    candidate: AlertCandidate,
+    since: str,
+    rows: list[_Row],
+    report: AlertReport | None,
+    link: str | None,
 ) -> str:
-    lines = [f"{_STYLES[kind].headline}: {_title(candidate)}", ""]
-    lines += [f"{label}: {value}" for label, value in rows]
+    lines = [f"{_one_line(candidate.monitor.name)} - {_STYLES[kind].title}", since, ""]
+    lines += [f"{row.label}: {row.value}" for row in rows]
     if link:
         lines += ["", f"View in CertWatch: {link}"]
+    if report:
+        for (title, span), tiles in (
+            (_summary_heading(report), _summary_tiles(report)),
+            (_performance_heading(report), _performance_tiles(report)),
+        ):
+            lines += ["", f"{title} - {span}"]
+            lines += [f"  {label}: {value}" for label, value in tiles]
     return "\n".join(lines) + "\n"
 
 
-def _html_row(label: str, value: str) -> str:
+# ── HTML (inline styles only: email clients drop <style> blocks) ─
+
+
+_FONT = "font-family:Arial,Helvetica,sans-serif;"
+
+
+def _html_value(row: _Row) -> str:
+    if row.link and row.value.lower().startswith(("http://", "https://")):
+        return (
+            f'<a href="{escape(row.value)}" style="color:#2b6cb0;font-weight:700;'
+            f'text-decoration:none;word-break:break-all;">{escape(row.value)}</a>'
+        )
+    return escape(row.value)
+
+
+def _html_row(row: _Row) -> str:
     return (
-        "<tr>"
-        f'<td style="padding:7px 0;color:#64748b;font-size:13px;width:150px;vertical-align:top;">{escape(label)}</td>'
-        f'<td style="padding:7px 0;color:#1e293b;font-size:13px;font-weight:600;word-break:break-all;">{escape(value)}</td>'
-        "</tr>"
+        '<tr><td style="padding:0 0 12px;">'
+        f'<div style="{_FONT}color:#6b7280;font-size:14px;">{escape(row.label)}</div>'
+        f'<div style="{_FONT}color:#111827;font-size:13px;font-weight:700;margin-top:2px;'
+        f'word-break:break-word;">{_html_value(row)}</div>'
+        "</td></tr>"
     )
 
 
-def _html_button(link: str | None) -> str:
+def _html_link(link: str | None) -> str:
     if not link:
         return ""
     return (
-        f'<p style="margin:18px 2px 0;"><a href="{escape(link)}" style="display:inline-block;'
-        "background:#4733e0;color:#ffffff;text-decoration:none;font-size:13px;font-weight:600;"
-        'padding:9px 16px;border-radius:8px;">View in CertWatch</a></p>'
+        f'<p style="{_FONT}margin:12px 0 0;font-size:12px;">'
+        f'<a href="{escape(link)}" style="color:#2b6cb0;font-weight:700;text-decoration:none;">'
+        "View in CertWatch</a></p>"
     )
 
 
-def _html_url_chip(url: str) -> str:
-    style = (
-        "display:inline-block;background:#ffffff;color:#111827;text-decoration:none;font-size:15px;"
-        "font-weight:700;padding:5px 12px;border-radius:8px;margin:8px 0 12px;"
-        "font-family:ui-monospace,Menlo,monospace;word-break:break-all;"
+def _html_section(heading: tuple[str, str], tiles: list[tuple[str, str]]) -> str:
+    title, span = heading
+    cells = "".join(
+        f'<td align="center" style="{_FONT}padding:6px 4px;vertical-align:top;">'
+        f'<div style="color:#6b7280;font-size:12px;">{escape(label)}</div>'
+        f'<div style="color:#111827;font-size:14px;font-weight:700;margin-top:3px;">'
+        f"{escape(value)}</div></td>"
+        for label, value in tiles
     )
-    if url.lower().startswith(("http://", "https://")):
-        return f'<a href="{escape(url)}" style="{style}">{escape(url)}</a>'
-    return f'<span style="{style}">{escape(url)}</span>'
+    return (
+        f'<div style="{_FONT}color:#111827;font-size:19px;margin:34px 0 16px;">'
+        f'{escape(title)} - <span style="font-size:12px;">{escape(span)}</span></div>'
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        f'style="border-collapse:collapse;"><tr>{cells}</tr></table>'
+    )
+
+
+def _html_chart(report: AlertReport) -> str:
+    alt = escape(chart_alt_text(report.response_series, report.performance_hours))
+    return (
+        f'<div style="margin:18px 0 0;padding:12px;border:1px solid #e5e7eb;border-radius:10px;">'
+        f'<img src="cid:{CHART_CID}" width="{CHART_WIDTH}" alt="{alt}" '
+        f'style="display:block;width:100%;max-width:{CHART_WIDTH}px;height:auto;border:0;">'
+        "</div>"
+    )
+
+
+def _html_report(report: AlertReport | None, with_chart: bool) -> str:
+    if report is None:
+        return ""
+    html = (_html_section(_summary_heading(report), _summary_tiles(report))
+            + _html_section(_performance_heading(report), _performance_tiles(report)))
+    return html + _html_chart(report) if with_chart else html
 
 
 def _html_body(
     kind: AlertKind,
     candidate: AlertCandidate,
-    rows: list[tuple[str, str]],
+    since: str,
+    rows: list[_Row],
+    report: AlertReport | None,
     link: str | None,
-    now: datetime,
+    with_chart: bool = False,
 ) -> str:
     style = _STYLES[kind]
-    table = "".join(_html_row(label, value) for label, value in rows)
+    table = "".join(_html_row(row) for row in rows)
     return f"""\
-<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:560px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;border:1px solid #e2e8f0;">
-  <div style="background:linear-gradient(135deg,#6c5cff 0%,#4733e0 55%,#2a1e7a 100%);padding:22px 26px;color:#fff;">
-    <div style="font-size:11px;letter-spacing:2px;opacity:.85;text-transform:uppercase;">CERTWATCH · Uptime Alert</div>
-    <div style="font-size:18px;font-weight:700;margin-top:8px;">{escape(_title(candidate))}</div>
-    {_html_url_chip(candidate.monitor.url)}
-    <div style="font-size:11px;opacity:.8;">Generated {_format_time(now)}</div>
+<div style="{_FONT}max-width:840px;margin:0 auto;background:#ffffff;">
+  <div style="background:{style.banner};padding:10px 16px 12px;text-align:center;color:#ffffff;">
+    <div style="{_FONT}font-size:24px;line-height:1.3;">{escape(_one_line(candidate.monitor.name))} - {escape(style.title)}</div>
+    <div style="{_FONT}font-size:11px;font-weight:700;margin-top:2px;">{escape(since)}</div>
   </div>
 
-  <div style="padding:22px 26px;">
-    <div style="background:{style.bg};border:1px solid {style.border};border-radius:10px;padding:16px 18px;">
-      <div style="color:{style.text};font-weight:700;font-size:14px;margin-bottom:8px;">{style.headline}</div>
-      <table style="width:100%;border-collapse:collapse;">{table}</table>
-    </div>
-    {_html_button(link)}
+  <div style="padding:24px 0 8px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">{table}</table>
+    {_html_link(link)}
+    {_html_report(report, with_chart)}
   </div>
 
-  <div style="padding:14px 26px;border-top:1px solid #eef2f7;color:#94a3b8;font-size:11px;text-align:center;">
+  <div style="{_FONT}padding:18px 0 6px;margin-top:26px;border-top:1px solid #eef2f7;color:#94a3b8;font-size:11px;text-align:center;">
     CERTWATCH &middot; website uptime monitoring &middot; by Workmates
   </div>
 </div>"""

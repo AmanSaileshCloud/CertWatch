@@ -14,13 +14,13 @@ import logging
 import smtplib
 import ssl
 from collections.abc import Callable
-from email.message import EmailMessage as MimeMessage
 from typing import Any
 
 from ...core.alert_models import EmailMessage
 from ...core.app_settings_models import AlertConfig
 from ...core.models import Alert
 from .base import format_body, format_html_body, format_subject
+from .mime import build_mime
 
 logger = logging.getLogger("ssl_monitor.notifier")
 
@@ -52,7 +52,7 @@ class SesSmtpNotifier:
         self.send_email(EmailMessage(
             subject=format_subject(alert),
             text=format_body(alert),
-            html=format_html_body(alert),
+            html=format_html_body(alert, self._config.report_timezone),
             to=tuple(recipients),
         ))
 
@@ -103,7 +103,7 @@ class SesSmtpNotifier:
     def _send_one(self, smtp: Any, message: EmailMessage, to: str) -> bool:
         sender = self._config.alert_email
         try:
-            smtp.sendmail(sender, [to], _mime(message, sender, to).as_string())
+            smtp.sendmail(sender, [to], build_mime(message, sender, to).as_string())
         except smtplib.SMTPException as exc:
             self.last_error = self._describe(exc)
             logger.error("SES SMTP refused %s (%s): %s", to, message.subject, self.last_error)
@@ -122,13 +122,3 @@ class SesSmtpNotifier:
             text = f"{type(exc).__name__}: {exc}"
         password = self._config.smtp_password
         return text.replace(password, "***") if password else text
-
-
-def _mime(message: EmailMessage, sender: str, to: str) -> MimeMessage:
-    mime = MimeMessage()
-    mime["Subject"] = message.subject
-    mime["From"] = sender
-    mime["To"] = to
-    mime.set_content(message.text)
-    mime.add_alternative(message.html, subtype="html")
-    return mime

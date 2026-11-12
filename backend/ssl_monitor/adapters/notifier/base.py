@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
+from zoneinfo import ZoneInfo
 
 from ...core.alert_models import EmailMessage
 from ...core.models import Alert
@@ -29,6 +30,16 @@ class NotifierPort(Protocol):
         others). Returns True if at least one recipient was accepted; never raises on
         delivery failure (log it) so the caller can retry on the next cycle."""
         ...
+
+
+def format_timestamp(value: datetime | None, tz: str = "UTC") -> str:
+    """"12 Nov 2026, 11:44 IST" — ``value`` shown in time zone ``tz`` (REPORT_TIMEZONE).
+    A naive datetime is taken as UTC. None gives "—"."""
+    if value is None:
+        return "—"
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(ZoneInfo(tz)).strftime("%d %b %Y, %H:%M %Z")
 
 
 def format_subject(alert: Alert) -> str:
@@ -58,15 +69,15 @@ _ALERT_PALETTE = {
 }
 
 
-def format_html_body(alert: Alert) -> str:
-    """A self-contained, email-client-safe HTML card (inline styles only)."""
+def format_html_body(alert: Alert, tz: str = "UTC") -> str:
+    """A self-contained, email-client-safe HTML card (inline styles only); times in ``tz``."""
     status = alert.status.value
     text_c, bg_c, border_c, headline = _ALERT_PALETTE.get(status, _ALERT_PALETTE["unreachable"])
 
     days = alert.days_remaining if alert.days_remaining is not None else "—"
-    expiry = alert.not_after.strftime("%d %b %Y, %H:%M UTC") if alert.not_after else "—"
+    expiry = format_timestamp(alert.not_after, tz)
     threshold = f"{alert.threshold} days" if alert.threshold is not None else "—"
-    generated = datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
+    generated = format_timestamp(datetime.now(timezone.utc), tz)
 
     if alert.detail:
         # An explicit explanation always wins — e.g. "the agent stopped

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
-from .uptime_models import AlertChannel, Incident, Monitor
+from .uptime_models import AlertChannel, CheckResult, Incident, Monitor
 
 ALLOWED_REMINDER_MINUTES = (0, 15, 30, 60, 120)  # 0 = no reminders
 ALLOWED_ALERT_DELAY_MINUTES = (0, 5, 10, 15, 30)  # 0 = alert as soon as DOWN is confirmed
@@ -44,6 +44,26 @@ class AlertCandidate:
 
 
 @dataclass(frozen=True)
+class AlertReport:
+    """Extra context shown in an alert email: the site's IP and recent availability
+    and performance. Every field may be missing (no data, or the lookup failed)."""
+
+    resolved_ip: str | None = None
+    summary_days: int = 3
+    availability_pct: float | None = None  # over the last ``summary_days``
+    downtimes: int = 0
+    downtime_seconds: float = 0.0
+    performance_hours: int = 24
+    checks: int = 0  # over the last ``performance_hours``
+    uptime_pct: float | None = None
+    avg_response_ms: int | None = None
+    min_response_ms: int | None = None
+    max_response_ms: int | None = None
+    # The checks behind the performance figures, for the response-time chart.
+    response_series: tuple[CheckResult, ...] = ()
+
+
+@dataclass(frozen=True)
 class AlertRule:
     """Extra alert recipient for one customer or one monitor (or global when both None)."""
 
@@ -59,8 +79,18 @@ class AlertRule:
 
 
 @dataclass(frozen=True)
+class InlineImage:
+    """An image shipped inside the email; the HTML shows it with src="cid:<cid>"."""
+
+    cid: str
+    data: bytes
+    subtype: str = "png"  # image/<subtype>
+
+
+@dataclass(frozen=True)
 class EmailMessage:
     subject: str
     text: str
     html: str
     to: tuple[str, ...]
+    images: tuple[InlineImage, ...] = ()

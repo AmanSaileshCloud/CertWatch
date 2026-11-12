@@ -114,6 +114,7 @@ def _alert_config(stored: StoredSettings, settings: Settings, box: SecretBox | N
         smtp_port=saved(SettingKey.SMTP_PORT, DEFAULT_SMTP_PORT),
         smtp_username=saved(SettingKey.SMTP_USERNAME, None),
         smtp_password=_decrypt_password(saved(SettingKey.SMTP_PASSWORD_ENCRYPTED, None), box),
+        report_timezone=settings.report_timezone,
     )
 
 

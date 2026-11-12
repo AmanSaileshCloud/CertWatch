@@ -149,7 +149,7 @@ def _alert() -> Alert:
 
 
 def test_ssl_notify_publishes_sns_and_sends_ses_unchanged(clients, monkeypatch):
-    monkeypatch.setattr(sns_ses, "format_html_body", lambda alert: "<card>")
+    monkeypatch.setattr(sns_ses, "format_html_body", lambda alert, tz="UTC": "<card>")
     alert = _alert()
     SnsSesNotifier(_settings()).notify(alert)
 
@@ -177,3 +177,22 @@ def test_ssl_notify_swallows_errors(clients):
     clients["ses"]._error = _client_error()
     SnsSesNotifier(_settings()).notify(_alert())  # must not raise
     assert len(clients["ses"].calls) == 1
+
+
+def test_message_with_images_goes_as_raw_email(clients):
+    from email import message_from_bytes
+
+    from backend.ssl_monitor.core.alert_models import InlineImage
+
+    message = dataclasses.replace(MESSAGE, images=(InlineImage("response-chart", b"\x89PNGdata"),))
+    clients["ses"].send_raw_email = lambda **kw: clients["ses"]._record("send_raw_email", kw)
+    assert SnsSesNotifier(_settings()).send_email(message) is True
+    [(name, kwargs)] = clients["ses"].calls
+    assert name == "send_raw_email"
+    assert kwargs["Source"] == SENDER
+    assert kwargs["Destinations"] == ["ops@example.com"]
+    mime = message_from_bytes(kwargs["RawMessage"]["Data"])
+    assert mime["To"] == "ops@example.com"
+    [image] = [p for p in mime.walk() if p.get_content_type() == "image/png"]
+    assert image["Content-ID"] == "<response-chart>"
+    assert image.get_payload(decode=True) == b"\x89PNGdata"

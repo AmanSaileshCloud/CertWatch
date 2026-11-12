@@ -10,6 +10,7 @@ from ...config.settings import Settings
 from ...core.app_settings_models import AlertConfig
 from ...services import alert_rules
 from ...services.catalog import Stores
+from ...services.alert_report import resolve_host_ip
 from ...services.uptime_alerts import AlertNotSent, default_recipients, send_test_alert
 from ..cooldown import Cooldown
 from ..dependencies import (
@@ -58,7 +59,7 @@ def test_alert(
     try:
         to = send_test_alert(
             stores.monitors, stores.catalog, notifier, monitor_id,
-            now=utc_now(), settings_like=config,
+            now=utc_now(), settings_like=config, resolve_ip=resolve_host_ip,
         )
     except AlertNotSent as exc:
         cooldown.start(monitor_id)

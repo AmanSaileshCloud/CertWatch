@@ -46,6 +46,7 @@ from ..ssl_monitor.handlers._deps import (
     make_uptime_repo,
 )
 from ..ssl_monitor.services.alert_config_cache import AlertConfigCache, BuiltFor
+from ..ssl_monitor.services.alert_report import resolve_host_ip
 from ..ssl_monitor.services.uptime_alerts import (
     AlertBackoff,
     AlertSummary,
@@ -137,7 +138,7 @@ def make_alert_dispatch(settings: Settings, repo: UptimeRepoPort) -> AlertDispat
                            "ALERT_RECIPIENTS): uptime alerts go only to alert-rule recipients")
         notifier = notifiers.get(config)
         return dispatch_alerts(repo, catalog, notifier, now=now, settings_like=config,
-                               backoff=backoff)
+                               backoff=backoff, resolve_ip=resolve_host_ip)
 
     return dispatch
 

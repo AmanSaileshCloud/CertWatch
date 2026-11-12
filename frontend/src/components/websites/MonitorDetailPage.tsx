@@ -90,6 +90,20 @@ export function MonitorDetailPage({ monitorId }: { monitorId: number }) {
     }
   }
 
+  /** Fire the alert trigger once: a [TEST] email to everyone who'd get this site's alerts. */
+  async function handleTest() {
+    setBusy(true);
+    try {
+      const res = await api.testMonitorAlert(monitorId);
+      toast.show(res.message, "success");
+    } catch (e) {
+      if (e instanceof ApiError) toast.show(e.message, e.status === 429 ? "info" : "error");
+      else toast.show("Could not send the test alert", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleDelete() {
     setBusy(true);
     try {
@@ -126,6 +140,14 @@ export function MonitorDetailPage({ monitorId }: { monitorId: number }) {
 
   const actions = (
     <>
+      <button
+        className="btn btn--ghost"
+        onClick={() => void handleTest()}
+        disabled={busy}
+        title="Send a test alert email to this website's alert recipients"
+      >
+        Test
+      </button>
       <button className="btn btn--ghost" onClick={() => setShowEdit(true)} disabled={busy}>Edit</button>
       {monitor.is_paused ? (
         <button className="btn btn--ghost" disabled={busy} onClick={() => void runAction(() => api.resumeMonitor(monitor.id), "Monitoring resumed")}>

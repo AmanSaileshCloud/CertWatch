@@ -28,6 +28,7 @@ from ..core.alert_models import (
 )
 from ..core.alert_policy import due_alert, effective_timing
 from ..core.uptime_models import Incident, Monitor
+from .alert_report import IpResolver, build_report
 from .errors import InvalidInput
 from .monitors import get_monitor
 
@@ -53,6 +54,7 @@ class AlertSettings(Protocol):
     uptime_reminder_minutes: int
     uptime_alert_delay_minutes: int
     public_url: str | None
+    report_timezone: str  # timestamps in the email are shown in this zone
 
 
 @dataclass(frozen=True)
@@ -142,6 +144,7 @@ def dispatch_alerts(
     settings_like: AlertSettings,
     backoff: AlertBackoff | None = None,
     clock: Callable[[], float] = time.monotonic,
+    resolve_ip: IpResolver | None = None,
 ) -> AlertSummary:
     """Send the alerts due now, at most ``MAX_ALERTS_PER_RUN`` (the rest wait for a
     later run); the run also stops after ``MAX_CONSECUTIVE_FAILURES`` failed sends in a
@@ -149,13 +152,14 @@ def dispatch_alerts(
     incident never blocks the rest.
 
     Delivery is at-least-once: an alert is marked sent only after the provider took
-    it, so if marking it fails it is sent again on the next run."""
+    it, so if marking it fails it is sent again on the next run. ``resolve_ip`` (e.g.
+    ``resolve_host_ip``) adds the site's IP to the email; None skips the DNS lookup."""
     with repo.alert_dispatch_lock() as acquired:
         if not acquired:
             logger.debug("Uptime alert dispatch skipped: another worker holds the lock")
             return AlertSummary()
         run = _Dispatch(repo, catalog, notifier, now, settings_like, backoff or AlertBackoff(),
-                        clock)
+                        clock, resolve_ip)
         return run.all(repo.alert_candidates(now))
 
 
@@ -172,8 +176,10 @@ class _Dispatch:
         settings: AlertSettings,
         backoff: AlertBackoff,
         clock: Callable[[], float] = time.monotonic,
+        resolve_ip: IpResolver | None = None,
     ) -> None:
         self.repo, self.catalog, self.notifier = repo, catalog, notifier
+        self.resolve_ip = resolve_ip
         self.now, self.settings, self.backoff = now, settings, backoff
         self.sent = self.failed = self.failures_in_a_row = 0
         self.in_flight: AlertKey | None = None
@@ -277,7 +283,9 @@ class _Dispatch:
                 )
             return _SendOutcome.NO_RECIPIENTS
         message = format_uptime_alert(
-            kind, candidate, now=self.now, to=to, public_url=self.settings.public_url
+            kind, candidate, now=self.now, to=to, public_url=self.settings.public_url,
+            tz=self.settings.report_timezone,
+            report=build_report(self.repo, monitor, self.now, self.resolve_ip),
         )
         if not self.notifier.send_email(message):
             return _SendOutcome.REFUSED
@@ -320,6 +328,7 @@ def send_test_alert(
     *,
     now: datetime,
     settings_like: AlertSettings,
+    resolve_ip: IpResolver | None = None,
 ) -> list[str]:
     """Send a [TEST] email for one monitor to everyone who would get its alerts.
 
@@ -333,7 +342,9 @@ def send_test_alert(
         )
     candidate = _test_candidate(repo, catalog, monitor, now)
     message = format_uptime_alert(
-        AlertKind.TEST, candidate, now=now, to=to, public_url=settings_like.public_url
+        AlertKind.TEST, candidate, now=now, to=to, public_url=settings_like.public_url,
+        tz=settings_like.report_timezone,
+        report=build_report(repo, monitor, now, resolve_ip),
     )
     if not notifier.send_email(message):
         raise AlertNotSent("The email provider refused the test alert; check the server logs")

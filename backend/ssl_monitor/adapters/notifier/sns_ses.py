@@ -21,6 +21,7 @@ from ...config.settings import Settings
 from ...core.alert_models import EmailMessage
 from ...core.models import Alert
 from .base import format_body, format_html_body, format_subject
+from .mime import build_mime
 
 logger = logging.getLogger("ssl_monitor.notifier")
 
@@ -61,7 +62,7 @@ class SnsSesNotifier:
             message = EmailMessage(
                 subject=subject,
                 text=body,
-                html=format_html_body(alert),
+                html=format_html_body(alert, self._settings.report_timezone),
                 to=tuple(recipients),
             )
             self._send_ses(message, list(message.to), context=alert.domain)
@@ -82,6 +83,9 @@ class SnsSesNotifier:
 
     def _send_ses(self, message: EmailMessage, recipients: list[str], *, context: str) -> bool:
         try:
+            if message.images:
+                self._send_raw(message, recipients)
+                return True
             self._ses.send_email(
                 Source=self._settings.alert_email,
                 Destination={"ToAddresses": recipients},
@@ -97,3 +101,14 @@ class SnsSesNotifier:
             logger.error("SES send failed for %s: %s", context, exc)
             return False
         return True
+
+    def _send_raw(self, message: EmailMessage, recipients: list[str]) -> None:
+        """Messages with inline images (e.g. the uptime chart) need a raw MIME email;
+        SES's simple send_email has no attachments."""
+        sender = self._settings.alert_email
+        mime = build_mime(message, sender, ", ".join(recipients))
+        self._ses.send_raw_email(
+            Source=sender,
+            Destinations=recipients,
+            RawMessage={"Data": mime.as_bytes()},
+        )
